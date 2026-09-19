@@ -37,7 +37,7 @@ class StudentErrorLog(Base):
         补充：knowledge_points_json（一次可能涉及多个知识点，
               knowledge_point 存"主知识点"用于聚合与索引，
               完整列表存 JSON 供展示，避免再建一张关联表）
-              filename / source / record_id / model / trace_id
+              filename / source / model / trace_id
     """
 
     __tablename__ = "student_error_logs"
@@ -69,8 +69,6 @@ class StudentErrorLog(Base):
     # ---------- 工程字段 ----------
     # 这条错题是哪次诊断产生的：diagnose（错题本接口）/ check（旧的 AI 检测）
     source: Mapped[str] = mapped_column(String(16), default="diagnose", nullable=False)
-    # 关联的流水账记录，便于"从错题跳回当时那份代码"
-    record_id: Mapped[int | None] = mapped_column(Integer, default=None)
     model: Mapped[str | None] = mapped_column(String(128), default=None)
     trace_id: Mapped[str | None] = mapped_column(String(64), default=None)
 

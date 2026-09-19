@@ -22,8 +22,6 @@ EXPECTED_ROUTES = {
     "/api/v1/tutor/check": {"post"},
     "/api/v1/tutor/comment": {"post"},
     "/api/v1/tutor/fix": {"post"},
-    "/api/v1/tutor/history": {"get"},
-    "/api/v1/tutor/history/{record_id}": {"get", "delete"},
     "/api/v1/tutor/status": {"get"},
     # 本地项目库（按语言自动分类学生本地代码）
     "/api/v1/library/scan": {"get"},
@@ -167,7 +165,6 @@ def test_no_untagged_operations(spec: dict) -> None:
         ("CodeChange", "reason"),
         ("TutorStatusResponse", "ai_available"),
         ("TutorStatusResponse", "supported_languages"),
-        ("TutorHistoryResponse", "items"),
         # 文件自动分类：前端与验收脚本都直接读这些字段
         ("FileScanResponse", "counts"),
         ("FileScanResponse", "moved"),

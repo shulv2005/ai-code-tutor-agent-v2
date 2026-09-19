@@ -23,7 +23,7 @@ from app.main import FRONTEND_PAGES, create_app, frontend_page_urls
 # 期望的模块标签 -> 最少接口数（只写下限，以后加接口不用改）
 EXPECTED_MODULES = {
     "health": 2,
-    "tutor": 11,
+    "tutor": 8,
     "library": 3,
     "files": 2,
     "check": 1,
@@ -36,8 +36,7 @@ EXPECTED_MODULES = {
 
 # 每个功能模块的落库表（全部属于学生端）
 EXPECTED_TABLES = {
-    # 学习流水账 + 错题本
-    "tutor_records",
+    # 错题本
     "student_error_logs",
     # 三个学习功能的历史
     "code_check_records",
@@ -114,7 +113,9 @@ def test_startup_inventory_helper_reports_modules() -> None:
 
     inventory = log_route_inventory(create_app())
     assert set(EXPECTED_MODULES) <= set(inventory)
-    assert sum(inventory.values()) >= 30
+    # 只写"不要被清空"的下限，不是精确数字：真正要防的是有人误删整块路由。
+    # 当前实际 28 条（删掉开源贡献端与历史记录之后降下来的）。
+    assert sum(inventory.values()) >= 25, f"路由数异常偏少: {sum(inventory.values())}"
 
 
 def test_frontend_pages_are_declared() -> None:

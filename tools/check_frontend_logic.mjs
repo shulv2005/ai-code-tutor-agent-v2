@@ -155,7 +155,6 @@ function register(id, rect) {
 [
   'dropzone', 'fileInput', 'pasteName', 'pasteCode', 'pasteBtn',
   'classifyCard', 'classifyList', 'structureBox', 'structureList',
-  'historyList', 'refreshHistory',
   'libraryHint', 'libraryChips', 'libraryList', 'libraryMore', 'refreshLibrary',
   'libraryDropzone', 'libraryPathValue', 'copyLibraryPath', 'libraryReadOnlyHint',
   // 模型设置（选模型 + 填自己的 API Key）

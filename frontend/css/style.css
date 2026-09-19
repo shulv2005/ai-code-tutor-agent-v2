@@ -11,7 +11,7 @@
      2. 顶部栏
      3. 三栏布局
      4. 卡片通用样式
-     5. 左侧栏：上传区 / 分类结果 / 历史记录
+     5. 左侧栏：上传区 / 分类结果 / 本地项目库
      6. 中部：代码展示
      7. 右侧：结果展示（评分 / 问题 / 注释 / 改错）
      8. 按钮、徽章、提示条
@@ -464,45 +464,6 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .structure__list code { font-family: var(--mono); color: var(--text); }
 .structure__list span { color: var(--text-faint); white-space: nowrap; }
-
-/* ---------- 5.5 历史记录 ---------- */
-.history {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  flex: 1;
-  min-height: 0;
-}
-
-.history__empty { color: var(--text-faint); font-size: 12px; padding: 8px 0; }
-
-.history__item {
-  padding: 8px 9px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
-}
-
-.history__item:hover { background: #f7fafb; border-color: var(--line); }
-
-.history__row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  justify-content: space-between;
-}
-
-.history__name {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.history__meta { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
 
 /* ---------- 5.6 本地项目库 ---------- */
 /*

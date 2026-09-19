@@ -13,14 +13,15 @@
 --  字段与需求文档的对应关系（需求点名 8 个字段，这里全部具备）：
 --      id / student_id / code_snippet / language /
 --      error_type / knowledge_point / ai_feedback / created_at
---  另加 6 个工程字段：knowledge_points_json / filename / source /
---      record_id / model / trace_id，理由见下面的逐列注释。
+--  另加 5 个工程字段：knowledge_points_json / filename / source /
+--      model / trace_id，理由见下面的逐列注释。
 --
---  与 tutor_records 表的分工：
---      tutor_records       流水账：每次操作都记（包含"没错误"的那些）
---      student_error_logs  错题本：只记真正出错的，字段面向复习与聚合
---  合并成一张表的代价：查「最近 5-10 条错题」要按状态过滤流水账，
---  历史列表会被"无错误"记录稀释，按知识点聚合也要全表扫。所以分开建两张。
+--  为什么这个错题本**自带全部信息**、不依赖任何别的表：
+--  它存了当时的代码片段（code_snippet）、知识点、错误类型与 AI 反馈，
+--  因此查回来就是一个完整的复习条目。原先还有一个 record_id 指向
+--  tutor_records 流水账（"这次错误是哪一次提交产生的"），
+--  但那张表的唯一读取方是页面左下角的「历史记录」列表——
+--  该功能已删除，流水账与这个外键一并移除。
 -- ============================================================================
 
 
@@ -68,8 +69,6 @@ CREATE TABLE IF NOT EXISTS student_error_logs (
     -- ---------- 工程字段 ----------
     -- 这条错题是哪次操作产生的：diagnose（新接口）/ check（旧的 AI 检测）
     source                  VARCHAR(16)  NOT NULL DEFAULT 'diagnose',
-    -- 关联的流水账记录 id，便于"从错题跳回当时那份代码"
-    record_id               INTEGER,
     model                   VARCHAR(128),
     trace_id                VARCHAR(64),
 
@@ -122,16 +121,13 @@ CREATE TABLE IF NOT EXISTS student_error_logs (
     knowledge_points_json   TEXT,
     ai_feedback             MEDIUMTEXT   NOT NULL,
     source                  VARCHAR(16)  NOT NULL DEFAULT 'diagnose',
-    record_id               BIGINT       DEFAULT NULL,
     model                   VARCHAR(128) DEFAULT NULL,
     trace_id                VARCHAR(64)  DEFAULT NULL,
     created_at              DATETIME(6)  NOT NULL,
     PRIMARY KEY (id),
     KEY ix_student_error_logs_student_created (student_id, created_at),
     KEY ix_student_error_logs_student_kp      (student_id, knowledge_point),
-    KEY ix_student_error_logs_error_type      (error_type),
-    CONSTRAINT fk_error_log_record
-        FOREIGN KEY (record_id) REFERENCES tutor_records (id) ON DELETE SET NULL
+    KEY ix_student_error_logs_error_type      (error_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 */
 

@@ -477,7 +477,6 @@ def test_diagnose_error_flow_logs_to_error_book(sqlite_path: Path, diagnose_app)
     # 归档
     assert body["logged"] is True
     assert body["error_log_id"]
-    assert body["record_id"]
     assert body["student_id"] == "S2024001"
 
     # 列表接口能查到同一条
@@ -575,16 +574,52 @@ def test_diagnose_returns_502_on_unparseable_model_output(
     assert errors["total"] == 0      # 关键：没有污染错题本
 
 
-def test_diagnose_records_history_entry(sqlite_path: Path, diagnose_app) -> None:
-    """诊断也要进流水账，学生能在「历史记录」里回看。"""
-    app, _ = diagnose_app
-    with TestClient(app) as client:
-        _diagnose(client)
-        history = client.get("/api/v1/tutor/history", params={"action": "diagnose"}).json()
+def test_error_book_tolerates_legacy_schema(sqlite_path: Path) -> None:
+    """旧数据库里残留的列与表，不能影响新代码的读写。
 
-    assert history["total"] == 1
-    assert history["items"][0]["action"] == "diagnose"
-    assert history["items"][0]["summary"]
+    为什么值得单独测：这次删掉了 `student_error_logs.record_id` 列与
+    `tutor_records` 表，但使用者手上的 `data/app.db` 是**旧结构**——
+    SQLAlchemy 的 `create_all` 只建不改，既不会删表也不会删列。
+    所以必须确认"旧库里多一列、多一张表"不会让插入与查询失败
+    （否则用户升级后一打开页面就报错）。
+    """
+    import asyncio
+    import sqlite3
+
+    # 造一个"旧结构"：错题本表比新模型多一个 record_id 列，外加一张 tutor_records
+    con = sqlite3.connect(sqlite_path)
+    con.execute(
+        """
+        CREATE TABLE student_error_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id VARCHAR(64) NOT NULL,
+            code_snippet TEXT NOT NULL,
+            language VARCHAR(32) NOT NULL,
+            filename VARCHAR(255),
+            error_type VARCHAR(32) NOT NULL,
+            knowledge_point VARCHAR(255) NOT NULL,
+            knowledge_points_json TEXT,
+            ai_feedback TEXT NOT NULL,
+            source VARCHAR(16) NOT NULL DEFAULT 'diagnose',
+            record_id INTEGER,
+            model VARCHAR(128),
+            trace_id VARCHAR(64),
+            created_at DATETIME NOT NULL
+        )
+        """
+    )
+    con.execute("CREATE TABLE tutor_records (id INTEGER PRIMARY KEY, action VARCHAR(16))")
+    con.commit()
+    con.close()
+
+    async def _roundtrip() -> list[str]:
+        async with _db() as session:
+            saved = await _save(session, "LEGACY", kp="循环边界")
+            assert saved is not None
+            recent = await TutorService.recent_errors(session, student_id="LEGACY", limit=5)
+            return [item.knowledge_point for item in recent]
+
+    assert asyncio.run(_roundtrip()) == ["循环边界"]
 
 
 def test_error_book_works_without_identity(sqlite_path: Path, diagnose_app) -> None:

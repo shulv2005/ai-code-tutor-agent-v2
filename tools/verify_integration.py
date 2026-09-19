@@ -38,11 +38,11 @@ if str(BASE) not in sys.path:
 # 数字只写"下限"，以后加接口不用改这个表；但少一个模块立刻失败。
 EXPECTED_MODULES: dict[str, int] = {
     "health": 2,
-    # tutor 现在有 11 个操作：status / analyze / check / comment / fix
-    # + diagnose（错题本 + 举一反三）/ errors(GET) / errors(DELETE)
-    # + history 列表 / 详情 / 删除。
+    # tutor 现在有 8 个操作：status / analyze / check / comment / fix
+    # + diagnose（错题本 + 举一反三）/ errors(GET) / errors(DELETE)。
+    # 原先还有 history 列表 / 详情 / 删除三个，随「历史记录」功能一起删除了。
     # 数字只写"下限"，但少一个模块或误删一条接口会立刻失败。
-    "tutor": 11,
+    "tutor": 8,
     # 项目库现在有 5 个操作：scan / file(GET) / file(PUT) / file(DELETE) / status。
     # 写两个（PUT/DELETE）是「在线编辑保存 / 替换 / 删除」用的，
     # 谁把它们误删了，这条断言会立刻报警。
@@ -59,8 +59,7 @@ EXPECTED_MODULES: dict[str, int] = {
 
 # 期望存在的数据库表（每个功能模块的落库表）
 EXPECTED_TABLES = {
-    # 学习流水账 + 错题本
-    "tutor_records",
+    # 错题本
     "student_error_logs",
     # 三个学习功能的历史
     "code_check_records",

@@ -206,7 +206,7 @@ def main() -> int:
 
         print()
         print("=" * 72)
-        print("4. 状态接口与历史记录")
+        print("4. 状态接口与错题本")
         print("=" * 72)
         code, status = request("GET", "/api/v1/tutor/status")
         ok = code == 200 and isinstance(status, dict) and status.get("ai_available") is False
@@ -214,15 +214,17 @@ def main() -> int:
         print(f"  {'OK ' if ok else 'FAIL'} {code}  ai_available={status.get('ai_available')} "
               f"支持语言={list((status.get('supported_languages') or {}).values())}")
 
-        code, history = request("GET", "/api/v1/tutor/history")
-        count = history.get("total", 0) if isinstance(history, dict) else 0
-        # 前面 3 次 analyze 应该已经写入了历史
-        ok = code == 200 and count >= 3
-        checks.append(("历史记录写入", ok))
-        print(f"  {'OK ' if ok else 'FAIL'} {code}  共 {count} 条记录")
-        if isinstance(history, dict) and history.get("items"):
-            first = history["items"][0]
-            print(f"      最新一条：{first['filename']} / {first['action']} / {first['language']}")
+        # 错题本接口：新库应当是空的，且不传身份也能用（单机版）
+        code, book = request("GET", "/api/v1/tutor/errors")
+        ok = code == 200 and isinstance(book, dict) and book.get("total") == 0
+        checks.append(("错题本接口可用（新库为空）", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  共 {book.get('total') if isinstance(book, dict) else '?'} 条错题")
+
+        # 「历史记录」功能已删除：它的接口不该再存在（404）
+        code, _ = request("GET", "/api/v1/tutor/history")
+        ok = code == 404
+        checks.append(("历史记录接口已随功能删除", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  GET /api/v1/tutor/history（应为 404）")
 
         print()
         print("=" * 72)

@@ -126,7 +126,6 @@ class DiagnoseResponse(BaseModel):
 
     model: str = ""
     duration_ms: float | None = None
-    record_id: int | None = None
     warnings: list[str] = Field(default_factory=list)
     trace_id: str | None = None
 

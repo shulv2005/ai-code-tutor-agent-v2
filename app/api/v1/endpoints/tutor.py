@@ -8,12 +8,13 @@
   POST /diagnose  AI 诊断（错题本 + 举一反三）：诊断结论 + 新题目 + 知识点解析
   GET  /errors    错题本列表 + 易错知识点聚合
   DELETE /errors/{id}  删除一条错题
-  GET  /history   历史记录列表 / 详情
 
 设计说明：
 - `/analyze` 完全不依赖大模型，因此**没配置模型时前端依然可用**，
   能演示文件上传、语言分类、代码结构展示；几个 AI 按钮会给出明确提示。
-- 几个 AI 接口的结果都会写入历史记录（流水账），供课堂回顾。
+- **除 `/diagnose` 外，几个 AI 接口都不落库**（不写任何表）：
+  以前的 `tutor_records` 流水账只为页面左下角的「历史记录」列表服务，
+  那个功能已删除，写入路径随之移除。
 - `/diagnose` 额外做两件事（见该函数的 docstring）：
     1. 调用前先捞出**最近的历史错题**，拼进提示词；
     2. 判定有错时把这次错误写进**错题本**（student_error_logs）。
@@ -29,7 +30,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -57,7 +57,6 @@ from app.core.llm_client import (
     dynamic_llm_client,
 )
 from app.core.trace import current_trace_id
-from app.models.tutor import TutorRecord
 from app.schemas.diagnose import (
     DiagnoseAnalysis,
     DiagnoseResponse,
@@ -75,9 +74,6 @@ from app.schemas.tutor import (
     CodeSymbolRead,
     CommentResponse,
     FixResponse,
-    TutorHistoryResponse,
-    TutorRecordDetail,
-    TutorRecordRead,
     TutorStatusResponse,
 )
 from app.services.repo.language import (
@@ -308,17 +304,13 @@ async def _active_agent(
     summary="AI 导师模块状态",
     description="前端据此决定三个 AI 按钮是否可点击，以及提示学生配置模型。",
 )
-async def tutor_status(agent: TutorAgentDep, session: DbSession) -> TutorStatusResponse:
-    from sqlalchemy import func, select
-
-    count = (await session.execute(select(func.count(TutorRecord.id)))).scalar_one()
+async def tutor_status(agent: TutorAgentDep) -> TutorStatusResponse:
     languages = supported_languages()
     return TutorStatusResponse(
         ai_available=agent.llm.configured,
         model=agent.llm.model,
         supported_languages={name: LANGUAGE_LABELS.get(name, name) for name in languages},
         max_upload_bytes=MAX_CODE_BYTES,
-        history_count=count,
     )
 
 
@@ -341,18 +333,8 @@ async def analyze_code(
     filename: str | None = Form(default=None, description="代码文本对应的文件名"),
 ) -> AnalyzeResponse:
     content, name = await _read_code(file, code, filename)
-    result = _analyze(name, content)
-    # 记录一次「分析」历史，让学生看到自己看过哪些文件
-    await TutorService.record(
-        session,
-        filename=name,
-        language=result.language,
-        code=content,
-        action="analyze",
-        summary=f"分析了 {result.line_count} 行代码，识别为 {result.language_label}",
-        result_json=None,
-    )
-    return result
+    # 纯本地解析：识别语言 + 提取函数/类，不落库、不调大模型
+    return _analyze(name, content)
 
 
 # ---------------------------------------------------------------------------
@@ -404,22 +386,6 @@ async def check_code(
         for item in payload.get("issues", [])
     ]
     score = float(payload.get("score", 0.0))
-    record = await TutorService.record(
-        session,
-        filename=name,
-        language=language,
-        code=content,
-        action="check",
-        score=score,
-        summary=str(payload.get("summary", ""))[:500],
-        result_json=json.dumps(
-            {"issues": [i.model_dump() for i in issues],
-             "highlights": payload.get("highlights", [])},
-            ensure_ascii=False,
-        ),
-        model=result.model,
-        duration_ms=result.duration_ms,
-    )
 
     return CheckResponse(
         filename=name,
@@ -430,7 +396,6 @@ async def check_code(
         issues=issues,
         highlights=payload.get("highlights", []),
         model=result.model,
-        record_id=record.id,
         trace_id=current_trace_id(),
     )
 
@@ -469,17 +434,6 @@ async def comment_code(
 
     commented = result.payload.get("commented_code", content)
     summary = str(result.payload.get("summary", ""))
-    record = await TutorService.record(
-        session,
-        filename=name,
-        language=language,
-        code=content,
-        action="comment",
-        summary=summary[:500],
-        result_json=json.dumps({"commented_code": commented}, ensure_ascii=False),
-        model=result.model,
-        duration_ms=result.duration_ms,
-    )
 
     return CommentResponse(
         filename=name,
@@ -487,7 +441,6 @@ async def comment_code(
         commented_code=commented,
         summary=summary,
         model=result.model,
-        record_id=record.id,
         trace_id=current_trace_id(),
     )
 
@@ -538,21 +491,6 @@ async def fix_code(
     summary = str(payload.get("summary", ""))
     had_error = bool(payload.get("had_error", False))
 
-    record = await TutorService.record(
-        session,
-        filename=name,
-        language=language,
-        code=content,
-        action="fix",
-        summary=summary[:500],
-        result_json=json.dumps(
-            {"fixed_code": fixed_code, "changes": [c.model_dump() for c in changes],
-             "had_error": had_error},
-            ensure_ascii=False,
-        ),
-        model=result.model,
-        duration_ms=result.duration_ms,
-    )
 
     return FixResponse(
         filename=name,
@@ -562,7 +500,6 @@ async def fix_code(
         summary=summary,
         had_error=had_error,
         model=result.model,
-        record_id=record.id,
         trace_id=current_trace_id(),
     )
 
@@ -659,17 +596,6 @@ async def diagnose_code(
     book_raw = result.payload["wrong_question_book"]
 
     # ---- 4. 写流水账（无论对错都记，学生能回看"我诊断过哪些代码"）----
-    record = await TutorService.record(
-        session,
-        filename=name,
-        language=language,
-        code=content,
-        action="diagnose",
-        summary=analysis_raw["message"][:500],
-        result_json=json.dumps(result.payload, ensure_ascii=False),
-        model=result.model,
-        duration_ms=result.duration_ms,
-    )
 
     # ---- 5. 判错 -> 写错题本 ----
     logged = False
@@ -685,7 +611,6 @@ async def diagnose_code(
             ai_feedback=analysis_raw["message"],
             filename=name,
             source="diagnose",
-            record_id=record.id,
             model=result.model,
         )
         if saved is not None:
@@ -721,7 +646,6 @@ async def diagnose_code(
         error_log_id=error_log_id,
         model=result.model,
         duration_ms=result.duration_ms,
-        record_id=record.id,
         warnings=result.warnings,
         trace_id=current_trace_id(),
     )
@@ -780,50 +704,3 @@ async def delete_error(
     sid = _resolve_student_id(student_id, x_student_id)
     if not await TutorService.delete_error(session, error_id=error_id, student_id=sid):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="错题不存在")
-
-
-# ---------------------------------------------------------------------------
-# 历史记录
-# ---------------------------------------------------------------------------
-@router.get(
-    "/history",
-    response_model=TutorHistoryResponse,
-    summary="历史记录列表",
-    description="按时间倒序列出学生之前的检测/注释/改错记录。",
-)
-async def list_history(
-    session: DbSession,
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    filename: str | None = Query(default=None, description="按文件名筛选"),
-    action: str | None = Query(default=None, description="按操作类型筛选：check/comment/fix"),
-) -> TutorHistoryResponse:
-    items, total = await TutorService.list_records(
-        session, limit=limit, offset=offset, filename=filename, action=action
-    )
-    return TutorHistoryResponse(
-        total=total, items=[TutorRecordRead.model_validate(item) for item in items]
-    )
-
-
-@router.get(
-    "/history/{record_id}",
-    response_model=TutorRecordDetail,
-    summary="历史记录详情",
-    description="返回某次记录的原始代码与完整结果，前端可用于回看。",
-)
-async def get_history_detail(record_id: int, session: DbSession) -> TutorRecordDetail:
-    record = await TutorService.get_record(session, record_id)
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在")
-    return TutorRecordDetail.model_validate(record)
-
-
-@router.delete(
-    "/history/{record_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="删除一条历史记录",
-)
-async def delete_history(record_id: int, session: DbSession) -> None:
-    if not await TutorService.delete_record(session, record_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记录不存在")

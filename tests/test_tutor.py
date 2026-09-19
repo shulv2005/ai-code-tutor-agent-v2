@@ -294,7 +294,6 @@ def test_check_endpoint(sqlite_path: Path, tutor_app: object) -> None:
     assert body["issues"][0]["severity"] == "error"
     assert body["issues"][0]["line"] == 2
     assert body["highlights"] == ["命名清晰", "缩进规范"]
-    assert body["record_id"]
 
 
 def test_check_rejects_unknown_language(sqlite_path: Path, tutor_app: object) -> None:
@@ -310,7 +309,6 @@ def test_comment_endpoint(sqlite_path: Path, tutor_app: object) -> None:
 
     assert "把两个数相加" in body["commented_code"]
     assert body["summary"]
-    assert body["record_id"]
 
 
 def test_fix_endpoint(sqlite_path: Path, tutor_app: object) -> None:
@@ -323,43 +321,35 @@ def test_fix_endpoint(sqlite_path: Path, tutor_app: object) -> None:
     assert body["changes"][0]["line"] == 2
 
 
-def test_all_actions_are_recorded_in_history(sqlite_path: Path, tutor_app: object) -> None:
-    """三种操作都应写入历史，供课堂回顾。"""
+def test_ai_endpoints_do_not_touch_the_database(sqlite_path: Path, tutor_app: object) -> None:
+    """四个 AI 接口都不落库。
+
+    原先每次操作都会往 `tutor_records` 流水账里写一行，供页面左下角的
+    「历史记录」列表读取。该功能已删除，写入路径也一并移除——
+    这里守住"没有偷偷写回去"，免得有人日后又把表加回来。
+    """
+    async def _table_names() -> set[str]:
+        from app.core.database import get_session
+
+        async with get_session() as session:
+            from sqlalchemy import text
+
+            rows = await session.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+            return {row[0] for row in rows}
+
     with TestClient(tutor_app) as client:  # type: ignore[arg-type]
-        client.post("/api/v1/tutor/analyze", data=_form("demo.py", PY_CODE))
-        client.post("/api/v1/tutor/check", data=_form("demo.py", PY_CODE))
-        client.post("/api/v1/tutor/comment", data=_form("demo.py", PY_CODE))
-        client.post("/api/v1/tutor/fix", data=_form("demo.py", PY_CODE))
-        history = client.get("/api/v1/tutor/history").json()
+        for action in ("analyze", "check", "comment", "fix"):
+            response = client.post(f"/api/v1/tutor/{action}", data=_form("demo.py", PY_CODE))
+            assert response.status_code == 200, response.text
+        # 流水账表与它的记录 ID 都不该再出现
+        assert "record_id" not in response.json()
 
-    actions = {item["action"] for item in history["items"]}
-    assert actions == {"analyze", "check", "comment", "fix"}
-    assert history["total"] == 4
+    import asyncio
 
-
-def test_history_detail_and_delete(sqlite_path: Path, tutor_app: object) -> None:
-    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
-        record_id = client.post(
-            "/api/v1/tutor/check", data=_form("demo.py", PY_CODE)
-        ).json()["record_id"]
-
-        detail = client.get(f"/api/v1/tutor/history/{record_id}")
-        assert detail.status_code == 200
-        assert detail.json()["code"] == PY_CODE
-        assert "issues" in (detail.json()["result_json"] or "")
-
-        assert client.delete(f"/api/v1/tutor/history/{record_id}").status_code == 204
-        assert client.get(f"/api/v1/tutor/history/{record_id}").status_code == 404
-
-
-def test_history_filter_by_action(sqlite_path: Path, tutor_app: object) -> None:
-    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
-        client.post("/api/v1/tutor/analyze", data=_form("a.py", PY_CODE))
-        client.post("/api/v1/tutor/check", data=_form("a.py", PY_CODE))
-        only_check = client.get("/api/v1/tutor/history", params={"action": "check"}).json()
-
-    assert only_check["total"] == 1
-    assert only_check["items"][0]["action"] == "check"
+    tables = asyncio.run(_table_names())
+    assert "tutor_records" not in tables, f"流水账表不该再建出来: {sorted(tables)}"
 
 
 def test_status_endpoint_reports_ai_available(sqlite_path: Path, tutor_app: object) -> None:
@@ -416,5 +406,8 @@ def test_openapi_exposes_tutor_routes(sqlite_path: Path, tutor_app: object) -> N
 
     for path in ("/api/v1/tutor/analyze", "/api/v1/tutor/check",
                  "/api/v1/tutor/comment", "/api/v1/tutor/fix",
-                 "/api/v1/tutor/history", "/api/v1/tutor/status"):
+                 "/api/v1/tutor/diagnose", "/api/v1/tutor/errors",
+                 "/api/v1/tutor/status"):
         assert path in paths
+    # 历史记录功能已删除，这三条路由不该再出现
+    assert "/api/v1/tutor/history" not in paths

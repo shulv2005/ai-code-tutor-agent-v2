@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -69,7 +68,6 @@ class CheckResponse(BaseModel):
     issues: list[CheckIssue] = Field(default_factory=list)
     highlights: list[str] = Field(default_factory=list, description="做得好的地方")
     model: str = ""
-    record_id: int | None = None
     trace_id: str | None = None
 
 
@@ -84,7 +82,6 @@ class CommentResponse(BaseModel):
     commented_code: str = Field(description="带中文注释的完整代码")
     summary: str = Field(default="", description="注释了哪些地方")
     model: str = ""
-    record_id: int | None = None
     trace_id: str | None = None
 
 
@@ -110,42 +107,7 @@ class FixResponse(BaseModel):
     summary: str = Field(default="", description="总体说明")
     had_error: bool = Field(default=True, description="是否真的发现了需要修的错误")
     model: str = ""
-    record_id: int | None = None
     trace_id: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# 历史记录
-# ---------------------------------------------------------------------------
-class TutorRecordRead(BaseModel):
-    """一条历史记录。"""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    filename: str
-    language: str
-    action: str
-    line_count: int
-    score: float | None = None
-    summary: str | None = None
-    model: str | None = None
-    duration_ms: float | None = None
-    created_at: datetime
-
-
-class TutorHistoryResponse(BaseModel):
-    """历史记录列表。"""
-
-    total: int
-    items: list[TutorRecordRead] = Field(default_factory=list)
-
-
-class TutorRecordDetail(TutorRecordRead):
-    """历史记录详情：额外带上原始代码与完整结果。"""
-
-    code: str = ""
-    result_json: str | None = None
 
 
 class TutorStatusResponse(BaseModel):
@@ -157,4 +119,3 @@ class TutorStatusResponse(BaseModel):
         default_factory=dict, description="语言标识 -> 展示名"
     )
     max_upload_bytes: int = 0
-    history_count: int = 0

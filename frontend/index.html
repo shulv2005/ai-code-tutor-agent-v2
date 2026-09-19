@@ -10,7 +10,7 @@
 
   页面分区（从上到下、从左到右）：
     ① 顶部栏      标题 + AI 服务状态
-    ② 左侧栏      模型设置  ⁄  文件选择  ⁄  本地项目库  ⁄  分类结果  ⁄  历史记录
+    ② 左侧栏      模型设置  ⁄  文件选择  ⁄  本地项目库  ⁄  分类结果
     ③ 中间主区    代码展示（带语法高亮）
     ④ 右侧结果区  **上下分栏**：
                      上半 = 当前代码的 AI 分析结果（检测 / 注释 / 改错 / 诊断结论）
@@ -233,18 +233,6 @@
           <summary>查看代码结构</summary>
           <ul class="structure__list" id="structureList"></ul>
         </details>
-      </section>
-
-      <!-- ---------- 2.4 历史记录 ---------- -->
-      <section class="card card--grow">
-        <h2 class="card__title">
-          ④ 历史记录
-          <button class="btn btn--mini" id="refreshHistory" title="刷新">↻</button>
-        </h2>
-        <!-- 历史列表由 JS 从 /api/v1/tutor/history 拉取 -->
-        <ul class="history" id="historyList">
-          <li class="history__empty">还没有记录，先上传一段代码试试</li>
-        </ul>
       </section>
     </aside>
 

@@ -12,7 +12,6 @@
      5. 三个 AI 功能          —— 检测 / 注释 / 改错
      5.4 错题本 + 举一反三    —— Markdown 渲染、诊断、错题本面板
      6. 本地项目库            —— 扫描、浏览、编辑保存、替换、删除
-     7. 历史记录
      8~10. 面板拖动、窄屏适配、三个拖拽区（需求二 / 需求三）
      11. 页面初始化与事件绑定
 
@@ -24,11 +23,8 @@
       POST /comment              AI 生成注释
       POST /fix                  AI 自动改错
       POST /diagnose             AI 诊断（错题本 + 举一反三）★ 新增
-      GET  /errors               错题本列表 + 易错知识点聚合           ★ 新增
-      DELETE /errors/{id}        删除一条错题                          ★ 新增
-      GET  /history              历史记录列表
-      GET  /history/{id}         历史记录详情
-      DELETE /history/{id}       删除记录
+      GET  /errors               错题本列表 + 易错知识点聚合
+      DELETE /errors/{id}        删除一条错题
      /api/v1/library 下（本地项目库，不需要大模型）：
       GET  /scan                 扫描本地文件夹并按语言分类
       GET  /file                 读取某个文件的代码内容（带 sha256，用于乐观锁）
@@ -89,7 +85,6 @@ const state = {
   languageLabel: '',   // 语言展示名
   aiAvailable: false,  // 后端 .env 里是否配置了大模型
   backendModel: '',    // 后端默认模型名（用于徽章上显示）
-  history: [],         // 历史记录
   libraryFiles: [],    // 项目库扫描到的文件
   libraryFilter: '',   // 当前选中的语言筛选（'' 表示全部）
   libraryRoots: [],    // 项目库根目录（含绝对路径），供「复制路径」按钮使用
@@ -148,8 +143,6 @@ const el = {
   classifyList: document.getElementById('classifyList'),
   structureBox: document.getElementById('structureBox'),
   structureList: document.getElementById('structureList'),
-  historyList: document.getElementById('historyList'),
-  refreshHistory: document.getElementById('refreshHistory'),
 
   // 本地项目库
   libraryHint: document.getElementById('libraryHint'),
@@ -1457,7 +1450,6 @@ async function loadCode(filename, code, options = {}) {
   } catch (err) {
     toast(err.message, 'error');
   }
-  await loadHistory();
 }
 
 /* ==========================================================================
@@ -1565,7 +1557,6 @@ async function runCheck() {
     el.scoreSummary.textContent = '检测失败：' + err.message;
   } finally {
     setBusy(false);
-    await loadHistory();
   }
 }
 
@@ -1585,7 +1576,6 @@ async function runComment() {
     el.commentCode.textContent = '';
   } finally {
     setBusy(false);
-    await loadHistory();
   }
 }
 
@@ -1629,7 +1619,6 @@ async function runFix() {
     el.fixBody.hidden = true;
   } finally {
     setBusy(false);
-    await loadHistory();
   }
 }
 
@@ -1840,7 +1829,6 @@ async function runDiagnose() {
     el.diagnoseMessage.textContent = err.message;
   } finally {
     setBusy(false);
-    await loadHistory();
   }
 }
 
@@ -2409,58 +2397,6 @@ function bindFileActions() {
       closeConfirm(false);
     }
   });
-}
-
-/* ==========================================================================
-   7. 历史记录
-   ========================================================================== */
-
-/** 操作类型 -> 中文名，用于历史列表上的小标签 */
-const ACTION_LABEL = { analyze: '分析', check: '检测', comment: '注释', fix: '改错' };
-
-/** 从后端拉取历史记录并渲染 */
-async function loadHistory() {
-  try {
-    const data = await api('/history?limit=20');
-    state.history = data.items;
-
-    if (!data.items.length) {
-      el.historyList.innerHTML = '<li class="history__empty">还没有记录，先上传一段代码试试</li>';
-      return;
-    }
-
-    el.historyList.innerHTML = data.items.map((item) => {
-      // 评分只有"检测"操作才有，其它操作显示操作类型
-      const extra = item.score != null
-        ? `${Math.round(item.score)} 分`
-        : ACTION_LABEL[item.action] || item.action;
-      const time = new Date(item.created_at).toLocaleString('zh-CN', {
-        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-      });
-      return `
-        <li class="history__item" data-id="${item.id}">
-          <div class="history__row">
-            <span class="history__name">${escapeHtml(item.filename)}</span>
-            <span class="badge badge--accent">${extra}</span>
-          </div>
-          <div class="history__meta">${escapeHtml(item.language)} · ${time}</div>
-        </li>`;
-    }).join('');
-  } catch (err) {
-    el.historyList.innerHTML =
-      `<li class="history__empty">读取失败：${escapeHtml(err.message)}</li>`;
-  }
-}
-
-/** 点击历史记录：把当时的原始代码重新载入编辑区 */
-async function openHistoryItem(recordId) {
-  try {
-    const detail = await api(`/history/${recordId}`);
-    await loadCode(detail.filename, detail.code);
-    toast('已载入历史记录中的代码', 'ok');
-  } catch (err) {
-    toast(err.message, 'error');
-  }
 }
 
 /* ==========================================================================
@@ -3276,7 +3212,6 @@ function bindActions() {
   el.btnFix.addEventListener('click', runFix);
   // 第 4 个按钮：诊断 + 举一反三（唯一会读写错题本的那个）
   el.btnDiagnose.addEventListener('click', runDiagnose);
-  el.refreshHistory.addEventListener('click', loadHistory);
   // 重新读一次错题本（在别的设备/标签页里做过诊断时用得上）
   el.refreshWrongBook.addEventListener('click', loadErrorBook);
   // 一键恢复默认布局（拖乱了 / 换了台显示器之后不用自己慢慢调回来）
@@ -3315,12 +3250,6 @@ function bindActions() {
 
   // ---- 清空代码：占位提示会重新出现（需求一第 4 条）----
   el.clearCodeBtn.addEventListener('click', clearCode);
-
-  // 历史列表用事件委托：列表项是动态生成的，逐个绑定会随刷新丢失
-  el.historyList.addEventListener('click', (event) => {
-    const item = event.target.closest('.history__item');
-    if (item) openHistoryItem(item.dataset.id);
-  });
 }
 
 /**
@@ -3405,7 +3334,7 @@ async function init() {
   // loadErrorBook 也放在这里（而不是等学生点诊断）：错题本是长期资产，
   // 刷新页面后应该立刻能看到自己的错题，而不是一片空白。
   await Promise.all([
-    loadStatus(), loadHistory(), loadLibrary(''), loadModels(), loadErrorBook(),
+    loadStatus(), loadLibrary(''), loadModels(), loadErrorBook(),
   ]);
 }
 

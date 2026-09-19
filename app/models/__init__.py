@@ -9,12 +9,14 @@
 
 | 表 | 用途 |
 | --- | --- |
-| `tutor_records` | 学习流水账：每次检测/注释/改错/诊断都记一条 |
-| `student_error_logs` | 错题本：只记真正出错的，按知识点归档 |
+| `student_error_logs` | 错题本：每次诊断判定有错时归档一条，按知识点聚合 |
 | `code_check_records` | AI 自动检测（深度版）的历史 |
 | `code_fix_records` | AI 改错（深度版）的历史 |
 | `comment_records` | AI 注释生成的历史 |
 | `classified_files` | 文件自动分类的台账 |
+
+原先还有一张 `tutor_records`（页面每次操作都记一条流水账），它唯一的读取方是
+左下角的「历史记录」列表。该功能已删除，表与模型也一并移除。
 """
 
 from app.models.base import utc_now
@@ -23,7 +25,6 @@ from app.models.code_fix import CodeFixRecord
 from app.models.comment import CommentRecord
 from app.models.error_log import StudentErrorLog
 from app.models.file_record import ClassifiedFileRecord
-from app.models.tutor import TutorAction, TutorRecord
 
 __all__ = [
     "ClassifiedFileRecord",
@@ -31,7 +32,5 @@ __all__ = [
     "CodeFixRecord",
     "CommentRecord",
     "StudentErrorLog",
-    "TutorAction",
-    "TutorRecord",
     "utc_now",
 ]
