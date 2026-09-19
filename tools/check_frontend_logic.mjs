@@ -429,6 +429,7 @@ const epilogue = `
   renderMarkdown, renderDiagnose, renderWrongBook, renderWeakPoints,
   renderErrorLogList, resetWrongBook, loadErrorBook, runDiagnose, deleteErrorLog,
   bindErrorLogActions,
+  parseServerTime, formatServerTime,
   // 响应式布局：三档断点 / 缩放后重新夹取 / 一键恢复
   tiers: LAYOUT_TIERS, layoutTier, panelOtherWidth, reclampLayout,
   syncLayoutVars, syncLayoutTiers, watchViewportForLayout, resetLayout,
@@ -1732,6 +1733,47 @@ check('恢复布局：5000px 这种离谱存档会被夹到合法值（不横向
 
 // 收尾：把视口恢复成默认值，免得影响后面可能新增的用例
 setViewportWidth(1600);
+
+// ---- 9. 时间显示：后端给 UTC，必须按 UTC 解析（否则整体偏一个时区）----
+// 真实 bug：接口返回 "2026-09-19T14:35:12"（没带 Z），浏览器按本地时间解析，
+// 于是北京时间少了 8 小时——用户看到的就是"右下角时间和电脑时间不一样"。
+console.log();
+console.log('='.repeat(72));
+console.log('时间显示  后端 UTC ↔ 浏览器本地时区');
+console.log('='.repeat(72));
+
+const withZone = api.parseServerTime('2026-09-19T14:35:12Z');
+const withoutZone = api.parseServerTime('2026-09-19T14:35:12');
+check('带 Z 的时间按 UTC 解析',
+  withZone !== null && withZone.toISOString() === '2026-09-19T14:35:12.000Z',
+  withZone ? withZone.toISOString() : 'null');
+check('不带时区的时间也按 UTC 解析（不能当本地时间）',
+  withoutZone !== null && withoutZone.getTime() === withZone.getTime(),
+  withoutZone ? withoutZone.toISOString() : 'null');
+check('两种写法解析出的时刻完全相同', 
+  withZone !== null && withoutZone !== null
+  && withZone.getTime() === withoutZone.getTime());
+check('带 +08:00 偏移的时间能正确换算到同一时刻',
+  api.parseServerTime('2026-09-19T22:35:12+08:00').getTime() === withZone.getTime());
+check('空值/脏值不抛异常，返回 null',
+  api.parseServerTime('') === null && api.parseServerTime(undefined) === null
+  && api.parseServerTime('不是时间') === null);
+check('格式化后与学生看到的样式一致（月-日 时:分）',
+  /\d{2}\/\d{2}\s+\d{2}:\d{2}/.test(api.formatServerTime('2026-09-19T14:35:12Z')),
+  api.formatServerTime('2026-09-19T14:35:12Z'));
+check('时间无法解析时给占位符而不是 Invalid Date',
+  api.formatServerTime('坏了') === '时间未知', api.formatServerTime('坏了'));
+
+// 错题明细里直接用上了这个格式化函数
+api.renderErrorLogList([{
+  id: 99, student_id: 'local', language: 'python', error_type: '逻辑错误',
+  knowledge_point: '循环边界', ai_feedback: '少遍历一个元素',
+  code_snippet: 'x', created_at: '2026-09-19T14:35:12Z',
+}]);
+check('错题明细里的时间用的是 formatServerTime（走 UTC 解析）',
+  !el.errorLogList.innerHTML.includes('Invalid Date')
+  && el.errorLogList.innerHTML.includes(api.formatServerTime('2026-09-19T14:35:12Z')),
+  el.errorLogList.innerHTML.slice(0, 120));
 
 /* ---------------------------------------------------------------------------
    12. 汇总

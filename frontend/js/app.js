@@ -1882,6 +1882,40 @@ function renderWeakPoints(points) {
   el.weakPointBox.hidden = false;
 }
 
+/**
+ * 把后端给的时间字符串解析成 Date。
+ *
+ * 为什么要专门包一层：后端存的是 **UTC**，但如果返回的 ISO 串里没有时区标记
+ * （`Z` 或 `+08:00` 这类），浏览器会按**本地时间**解析
+ * （ES2016 之后的规范对"不带时区的日期时间"就是这么规定的）。
+ * 结果就是"后端给 UTC、页面当北京时间显示"，在中国正好差 8 小时 ——
+ * 这正是"右下角时间与电脑时间不一致"那个 bug。
+ *
+ * 后端已经改成返回带 `Z` 的时间（见 app/models/base.py 的 UTCDateTime），
+ * 这里再兜一道：万一某个接口漏了时区标记，补上 `Z` 按 UTC 解释，
+ * 至少不会静默偏 8 小时。
+ *
+ * @param {string} value 后端返回的时间字符串
+ * @returns {Date|null} 解析结果；无法解析时返回 null（调用方显示占位符）
+ */
+function parseServerTime(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  // 已经带时区信息（Z 或 ±hh:mm）就原样解析
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text);
+  const date = new Date(hasZone ? text : `${text}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** 把后端时间格式化成学生看得懂的「月-日 时:分」（按浏览器所在时区） */
+function formatServerTime(value) {
+  const date = parseServerTime(value);
+  if (date === null) return '时间未知';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 /** 渲染历史错题明细（每条带一个删除按钮） */
 function renderErrorLogList(items) {
   if (!items || !items.length) {
@@ -1891,9 +1925,7 @@ function renderErrorLogList(items) {
   }
 
   el.errorLogList.innerHTML = items.map((item) => {
-    const time = new Date(item.created_at).toLocaleString('zh-CN', {
-      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    });
+    const time = formatServerTime(item.created_at);
     return `
       <li class="errorlog__item">
         <div class="errorlog__head">

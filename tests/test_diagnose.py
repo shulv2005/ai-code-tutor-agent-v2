@@ -574,6 +574,41 @@ def test_diagnose_returns_502_on_unparseable_model_output(
     assert errors["total"] == 0      # 关键：没有污染错题本
 
 
+def test_error_time_is_timezone_aware(sqlite_path: Path, diagnose_app) -> None:
+    """错题时间必须是**带时区的 UTC**，否则浏览器会按本地时间解析、整体偏一个时区。
+
+    这是一个真实踩过的坑（用户报的现象是"右下角时间与电脑时间不一样"）：
+    SQLite 的 DATETIME **不保存时区**，`DateTime(timezone=True)` 读回来是
+    naive 的 UTC 墙上时间，Pydantic 序列化成 `"2026-09-19T14:35:12"`——
+    没有 `Z`、也没有偏移量；而浏览器的 `new Date("不带时区的日期时间")`
+    按**本地时间**解析（ES2016 之后的规范如此），于是把 UTC 当北京时间显示，
+    在中国正好少 8 小时。
+
+    修法见 `app/models/base.py` 的 `UTCDateTime`：读取时补上 UTC 时区。
+    这条用例守住两件事：**带时区标记**，以及**时刻本身正确**（不是差几个时区）。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    app, _ = diagnose_app
+    before = datetime.now(UTC)
+    with TestClient(app) as client:
+        _diagnose(client)
+        # 身份要和 _diagnose 一致，否则查到的是另一个错题本（默认 local）
+        created = client.get(
+            "/api/v1/tutor/errors", headers={"X-Student-Id": "S2024001"}
+        ).json()["items"][0]["created_at"]
+    after = datetime.now(UTC)
+
+    # ① 必须带时区标记（`Z` 或 `+00:00`），否则浏览器会当本地时间解析
+    assert created.endswith("Z") or "+" in created[10:], f"时间没带时区标记：{created}"
+
+    # ② 解析出来的时刻要落在这次调用前后——而不是差 8 小时
+    parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    assert before - timedelta(seconds=5) <= parsed <= after + timedelta(seconds=5), (
+        f"时间对不上：{parsed} 不在 [{before}, {after}] 之间（差了 {parsed - before}）"
+    )
+
+
 def test_error_book_tolerates_legacy_schema(sqlite_path: Path) -> None:
     """旧数据库里残留的列与表，不能影响新代码的读写。
 

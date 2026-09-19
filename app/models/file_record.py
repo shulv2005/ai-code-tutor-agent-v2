@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String
+from sqlalchemy import BigInteger, Boolean, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.base import utc_now
+from app.models.base import UTCDateTime, utc_now
 
 
 class ClassifiedFileRecord(Base):
@@ -47,7 +47,7 @@ class ClassifiedFileRecord(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     # 文件自身的修改时间（磁盘上的 mtime）
     file_modified_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=None
+        UTCDateTime, default=None
     )
     # 是否已经归档到语言子目录里
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -57,11 +57,11 @@ class ClassifiedFileRecord(Base):
     # ---------- 时间 ----------
     # 首次入库时间，也就是接口里展示的「上传时间」
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+        UTCDateTime, default=utc_now, index=True, nullable=False
     )
     # 最近一次扫描到它的时间
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+        UTCDateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
 
     __table_args__ = (

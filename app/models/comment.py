@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.base import utc_now
+from app.models.base import UTCDateTime, utc_now
 
 
 class CommentRecord(Base):
@@ -65,7 +65,7 @@ class CommentRecord(Base):
     trace_id: Mapped[str | None] = mapped_column(String(64), default=None)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+        UTCDateTime, default=utc_now, index=True, nullable=False
     )
 
     __table_args__ = (
