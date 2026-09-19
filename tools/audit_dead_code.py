@@ -26,7 +26,7 @@ BASE = Path(__file__).resolve().parent.parent
 # 不参与"是否被引用"统计的目录：第三方、缓存、下载的模型权重
 SKIP_DIRS = {
     ".venv", "data", "__pycache__", ".pytest_cache", ".ruff_cache",
-    "node_modules", ".git", "opensource_collab_agent.egg-info",
+    "node_modules", ".git", "ai_code_tutor_agent.egg-info",
 }
 SOURCE_SUFFIXES = {
     ".py", ".js", ".html", ".css", ".md", ".bat", ".txt", ".toml", ".json",
@@ -178,7 +178,7 @@ def audit_artifacts() -> list[str]:
     junk: list[str] = []
     for entry in sorted(BASE.iterdir()):
         name = entry.name
-        if name in {".pytest_cache", ".ruff_cache", "opensource_collab_agent.egg-info"}:
+        if name in {".pytest_cache", ".ruff_cache", "ai_code_tutor_agent.egg-info"}:
             junk.append(f"{name}/  （可重新生成的缓存/构建产物）")
         elif entry.is_file() and (name.startswith("_") or name.endswith(".tmp")):
             junk.append(f"{name}  （临时文件）")

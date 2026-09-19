@@ -33,7 +33,7 @@ def test_root_endpoint_redirects_to_frontend(sqlite_path: Path) -> None:
         else:
             response = client.get("/")
             assert response.status_code == 200
-            assert response.json()["service"] == "opensource-collab-agent"
+            assert response.json()["service"] == "ai-code-tutor-agent"
 
 
 def test_frontend_static_assets_are_served(sqlite_path: Path) -> None:

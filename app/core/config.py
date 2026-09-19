@@ -47,7 +47,7 @@ def split_csv_list(value: object) -> object:
 class AppSettings(BaseModel):
     """应用自身的运行参数（供 FastAPI / uvicorn 使用）。"""
 
-    name: str = "opensource-collab-agent"
+    name: str = "ai-code-tutor-agent"
     version: str = "0.1.0"
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     debug: bool = True

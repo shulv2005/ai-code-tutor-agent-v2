@@ -23,7 +23,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_defaults_load_without_env(clean_env: None) -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.app.name == "opensource-collab-agent"
+    assert settings.app.name == "ai-code-tutor-agent"
     assert settings.app.api_v1_prefix == "/api/v1"
     assert settings.database.url.startswith("sqlite+aiosqlite:///")
     # 默认打开项目库写入：学生要能在页面上改作业

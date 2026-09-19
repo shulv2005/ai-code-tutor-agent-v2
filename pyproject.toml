@@ -1,5 +1,5 @@
 [project]
-name = "opensource-collab-agent"
+name = "ai-code-tutor-agent"
 version = "0.1.0"
 description = "AI 代码导师：代码检测 / 改错 / 注释 + 错题本与举一反三（本地 SQLite，双击 start.bat 即用）"
 requires-python = ">=3.11"
