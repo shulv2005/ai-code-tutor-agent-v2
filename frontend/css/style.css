@@ -160,9 +160,19 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   --sidebar-w: 300px;   /* 左侧栏当前宽度（JS 拖动时会改这个值） */
   --result-w: 380px;    /* 右侧结果区当前宽度 */
   --main-min: 400px;    /* 中间代码区最小宽度：再挤就看不清代码了 */
-  --resizer: 8px;       /* 分隔条占位宽度 */
+  /* 分隔条占位宽度。10px 而不是 8px：8px 在触摸板和手指上都太难点中。
+     这个值必须与 js 里的 RESIZER_SIZE 保持一致（tools/check_frontend.py 会核对），
+     否则拖动的夹取计算会按错的宽度算。 */
+  --resizer: 10px;
 }
 
+/* 布局断点（必须与 js 里的 LAYOUT_TIERS 一致，tools/check_frontend.py 会核对）：
+     宽屏 ≥ 1200px  三栏一行，四根分隔条全部可拖
+     中屏 900~1199  两栏两行（结果区独占一行），左栏/代码高度/上下分栏可拖
+     窄屏 < 900px   单栏自然堆叠，只保留代码区高度那根
+   为什么断点定在 1200 而不是 1280：1280×720/800 的笔记本、
+   以及 1920 屏在 150% 缩放下的 CSS 宽度都正好是 1280px，
+   断点写 1280 会让这一大批人一开页面就掉进"结果区被挤到屏幕外"的布局。 */
 .layout {
   flex: 1;
   min-height: 0;              /* 关键：让内部滚动区正常工作 */
@@ -173,7 +183,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
     minmax(var(--main-min), 1fr)
     var(--resizer)
     var(--result-w);
-  /* 注意：列之间不再用 gap —— 分隔条本身就是那 8px 的间距，
+  /* 行高必须**定下来**（而不是让它按内容自适应）：
+     auto 行会被侧栏那几张长卡片撑到远超视口，于是整页变成一条长滚动条、
+     各面板的内部滚动全部失效、右侧结果区被顶到屏幕外。
+     1fr 让这一行正好等于可用高度，面板各自在自己的区域里滚。 */
+  grid-template-rows: minmax(0, 1fr);
+  /* 行已经定高，理论上不会溢出；这一条是兜底，避免任何意外把整页顶出滚动条 */
+  overflow: hidden;
+  /* 注意：列之间不再用 gap —— 分隔条本身就是那 10px 的间距，
      再叠一层 gap 会让"左边栏宽度 = 拖动值"这个直觉对不上 */
   padding: 14px 20px 20px;
 }
@@ -187,40 +204,67 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 
 /* ---------- 3.1 可拖动的分隔条 ---------- */
+
+/* 为什么一定要"看得见"：
+   分隔条原先整条透明、只有鼠标悬停时才变色。结果就是**没人知道这里能拖**——
+   功能明明有，用起来却像没有。现在改成常显一小段"抓手"，
+   悬停/聚焦/拖动时变主色并加长，指向性很明确。 */
 .resizer {
+  position: relative;
   background: transparent;
-  transition: background 0.15s;
   /* 拖动时不要让浏览器把手指/鼠标事件解释成滚动或选中文字 */
   touch-action: none;
   user-select: none;
+  border-radius: 5px;
+}
+
+/* 常显的抓手：默认一小段中性色线条，不动声色但看得见 */
+.resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;                 /* 在 10px 的槽位里居中 */
+  border-radius: 999px;
+  background: var(--line);
+  transition: background 0.15s, transform 0.15s;
+}
+
+/* 悬停 / 键盘聚焦 / 正在拖动：变主色、稍微变长，明确告诉用户"抓住了" */
+.resizer:hover::after,
+.resizer:focus-visible::after,
+.resizer.is-dragging::after {
+  background: var(--accent);
 }
 
 /* 垂直分隔条：左右拖动，鼠标变成 col-resize（需求三第 6 条） */
-.resizer--col {
-  cursor: col-resize;
-  border-radius: 4px;
-}
+.resizer--col { cursor: col-resize; }
+.resizer--col::after { width: 2px; height: 46px; }
+.resizer--col:hover::after,
+.resizer--col:focus-visible::after,
+.resizer--col.is-dragging::after { height: 72px; }
 
 /* 水平分隔条：上下拖动，鼠标变成 row-resize */
 .resizer--row {
   cursor: row-resize;
-  height: 8px;
-  margin: 4px 0;
-  border-radius: 4px;
+  height: 10px;
+  margin: 5px 0;
 }
+.resizer--row::after { width: 46px; height: 2px; }
+.resizer--row:hover::after,
+.resizer--row:focus-visible::after,
+.resizer--row.is-dragging::after { width: 72px; }
 
-/* 悬停/聚焦时给一点视觉反馈，否则学生根本不知道这里能拖 */
-.resizer:hover,
+/* 键盘用户聚焦时给一个明确的轮廓（::after 变主色之外再加一圈） */
 .resizer:focus-visible {
-  background: var(--accent-border);
-  outline: none;
+  outline: 2px solid var(--accent-border);
+  outline-offset: -1px;
 }
 
-/* 正在拖动时（JS 会加上 is-dragging）：整条分隔条高亮，
+/* 正在拖动时：整条槽位淡色高亮，
    并且给 body 加上带方向的 .is-resizing-col / .is-resizing-row，
    让鼠标样式在拖动过程中保持不变（只加列方向或行方向，不写一个笼统的
    .is-resizing——那会让"只想要竖线光标"的地方也一起改掉） */
-.resizer.is-dragging { background: var(--accent); }
+.resizer.is-dragging { background: var(--accent-soft); }
 
 body.is-resizing-col, body.is-resizing-col * { cursor: col-resize !important; }
 body.is-resizing-row, body.is-resizing-row * { cursor: row-resize !important; }
@@ -1043,29 +1087,59 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 .callout--ok { background: var(--ok-soft); color: var(--ok); }
 
 /* ==========================================================================
-   9. 窄屏适配
-   窗口变窄时收成两栏（左栏 + 代码区），再窄则单栏堆叠。
+   9. 响应式布局：三档，任何窗口尺寸都能用
+   --------------------------------------------------------------------------
+   断点必须与 js 里的 LAYOUT_TIERS 完全一致（tools/check_frontend.py 会核对），
+   否则会出现"CSS 按两栏排、JS 却按三栏夹宽度"这种拖动就跳的怪现象。
 
-   注意：这两条规则必须跟着栅格一起改——栅格现在是 5 列
-   （栏 ｜ 分隔条 ｜ 栏 ｜ 分隔条 ｜ 栏），如果只改列数不隐藏分隔条，
-   那些 8px 的空 div 会各自占掉一格，把三栏挤成错位的样子。
-   所以窄屏下**先把分隔条藏掉**，再改列数。
+   ┌────────────┬──────────────────────────────────────────────┐
+   │ ≥ 1200px   │ 三栏一行：左栏 ｜ 代码 ｜ 结果（上下分栏）      │
+   │ 900~1199   │ 两栏两行：左栏+代码 / 结果区独占一行            │
+   │ < 900px    │ 单栏自然堆叠，整页滚动                        │
+   └────────────┴──────────────────────────────────────────────┘
+
+   中屏为什么改成"两行都定高"而不是像以前那样交给内容：
+   侧栏有 5 张卡片、结果区有长解析，两者内容加起来远超一屏；
+   行高自适应的话整页会变成一条长滚动条，各面板内部的滚动全部失效，
+   结果区被顶到屏幕外——用户看到的就是"页面不适配"。
+   现在两行各占一部分可用高度，各自内部滚动，一屏之内全都够得着。
+
+   ≥1200px 这一档**没有媒体查询**：文件上方的 .layout 基础规则就是它
+   （5 列 1 行）。这样才能保证"不写媒体查询时是三栏"，与 JS 的默认档位一致。
    ========================================================================== */
-@media (max-width: 1280px) {
-  /* 两栏：左侧栏 + 代码区；右侧结果区挪到下一行占满宽度 */
+
+@media (max-width: 1199px) and (min-width: 900px) {
+  /* 两栏两行：三列（左栏 ｜ 分隔条 ｜ 代码）+ 结果区跨整行。
+     左侧那根分隔条**保留**——它在两栏模式下调左栏宽度依然有意义，
+     以前连它一起藏掉，等于把"能拖"这件事整个拿走了。
+     右侧那根才该藏：结果区独占一整行，横向没得可拖。 */
   .layout {
-    grid-template-columns: var(--sidebar-w) minmax(var(--main-min), 1fr);
+    grid-template-columns: var(--sidebar-w) var(--resizer) minmax(0, 1fr);
+    /* 两行都定高：代码那行给多一点（编辑代码时更需要高度） */
+    grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
   }
-  .resizer--col { display: none; }      /* 两栏时没有横向可拖的空间 */
+  #resizerRight { display: none; }
   .pane:last-of-type { grid-column: 1 / -1; }
 }
 
-@media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
-  .resizer { display: none; }           /* 单栏时任何分隔条都没有意义 */
+@media (max-width: 899px) {
+  /* 单栏：整页自然滚动。宽度已经没有"分栏"可言，因此所有调宽度的
+     分隔条都藏掉；只留**代码区高度**那根——它在单栏下依然有用
+     （把代码区调高一点看长文件）。 */
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    overflow: visible;
+    /* 高度交给内容：这一档就是要让整页滚起来 */
+    flex: 0 0 auto;
+  }
+  #resizerLeft, #resizerRight, #resizerResultSplit { display: none; }
   .sidebar, .pane { overflow: visible; }
-  .sidebar { max-height: none; }
   .change__diff { grid-template-columns: 1fr; }
+  /* 上下分栏退回自然堆叠：结果区的两半按内容铺开 */
+  .pane--split { overflow: visible; }
+  .pane--split > .card { flex: none; }
+  .card__scroll { overflow: visible; }
 }
 
 /* ---------- 9.1 代码区高度（需求三第 3 条） ---------- */
@@ -1292,22 +1366,4 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .markdown table { border-collapse: collapse; font-size: 12.5px; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
-
-/* ---------- 10.7 上下分栏在窄屏下退回"自然堆叠" ----------
-   窄屏时右侧面板变成整行、高度由内容决定（没有确定高度），
-   此时百分比分栏与拖动都没有意义，因此：
-     · 让两半按内容自然铺开、外层恢复滚动；
-     · 把分隔条藏掉，免得学生拖了半天没反应。 */
-@media (max-width: 1280px) {
-  .pane--split { overflow: visible; }
-  .pane--split > .card { flex: none; }
-  .card__scroll { overflow: visible; }
-  #resizerResultSplit { display: none; }
-}
-
-@media (max-width: 860px) {
-  /* 单栏时左侧栏与结果区都自然铺开（与 .sidebar,.pane 的既有规则保持一致） */
-  .pane--split { overflow: visible; }
-  .card__scroll { overflow: visible; }
-}
 

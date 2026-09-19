@@ -161,7 +161,7 @@ function register(id, rect) {
   // 模型设置（选模型 + 填自己的 API Key）
   'modelCard', 'modelSelect', 'modelApiKey', 'toggleKeyVisible', 'modelHint',
   'modelStatus', 'modelStatusText', 'saveModelKey', 'clearModelKey', 'refreshModels',
-  'aiBadge', 'langBadge',
+  'aiBadge', 'langBadge', 'resetLayout',
   'codeTitle', 'codeLangBadge', 'code-placeholder', 'codeDropzone', 'codeBlock',
   'codeContent', 'clearCodeBtn',
   // 在线编辑
@@ -274,7 +274,16 @@ const navigatorStub = {
 };
 
 const windowStub = {
+  // 视口宽度：layoutTier() 按它判定宽/中/窄三档。
+  // 测试用 setViewportWidth() 改它，模拟把窗口拉宽拉窄。
+  innerWidth: 1600,
   requestIdleCallback: (callback) => {
+    idleQueue.push(callback);
+    return idleQueue.length;
+  },
+  // app.js 用 rAF 合并连续的 resize 事件；这里也排进 idleQueue，
+  // 测试里 drainIdle() 一执行就等于"浏览器完成了这一帧的重排"。
+  requestAnimationFrame: (callback) => {
     idleQueue.push(callback);
     return idleQueue.length;
   },
@@ -284,7 +293,35 @@ const windowStub = {
   },
   matchMedia: () => ({ matches: false, addEventListener: () => {} }),
   localStorage: localStorageStub,
+  _listeners: {},
+  addEventListener: (type, handler) => {
+    (windowStub._listeners[type] ||= []).push(handler);
+  },
+  removeEventListener: (type, handler) => {
+    windowStub._listeners[type] = (windowStub._listeners[type] || []).filter(
+      (item) => item !== handler,
+    );
+  },
 };
+
+/** 触发挂在 window 上的事件（resize 就是靠它模拟的） */
+function fireWindow(type, event = {}) {
+  const handlers = windowStub._listeners[type] || [];
+  handlers.slice().forEach((handler) => handler({ preventDefault() {}, ...event }));
+  return handlers.length;
+}
+
+/**
+ * 模拟把浏览器窗口调到某个宽度。
+ *
+ * 同时把栅格的可用宽度一起改掉——真实页面里 `.layout` 的宽度就是
+ * 视口宽度减去左右各 20px 的 padding。只改 innerWidth 而不改栅格宽度的话，
+ * "窗口变小后重新夹取尺寸"这类测试会测不出真实行为。
+ */
+function setViewportWidth(width) {
+  windowStub.innerWidth = width;
+  layoutElement._rect.width = Math.max(0, width - 40);
+}
 
 const hljsStub = {
   highlight: (text, options) => {
@@ -393,6 +430,10 @@ const epilogue = `
   renderMarkdown, renderDiagnose, renderWrongBook, renderWeakPoints,
   renderErrorLogList, resetWrongBook, loadErrorBook, runDiagnose, deleteErrorLog,
   bindErrorLogActions,
+  // 响应式布局：三档断点 / 缩放后重新夹取 / 一键恢复
+  tiers: LAYOUT_TIERS, layoutTier, panelOtherWidth, reclampLayout,
+  syncLayoutVars, syncLayoutTiers, watchViewportForLayout, resetLayout,
+  reserved: PANEL_RESERVED,
 };
 `;
 vm.runInContext(source + epilogue, context, { filename: 'app.js' });
@@ -514,7 +555,7 @@ check('代码区拖到 10px → 夹回最小高度 120px',
   api.clampCodeHeight(10, 460, 40) === 120,
   `得到 ${api.clampCodeHeight(10, 460, 40)}px`);
 check('代码区拖到 9999px → 不超过卡片内部可用高度',
-  api.clampCodeHeight(9999, 460, 40) === 460 - 40 - 70,
+  api.clampCodeHeight(9999, 460, 40) === 460 - 40 - api.reserved.codeChrome,
   `得到 ${api.clampCodeHeight(9999, 460, 40)}px`);
 
 // 真的模拟一次拖动：pointerdown → pointermove → pointerup
@@ -1322,8 +1363,9 @@ api.bindResizers();
 check('分栏最小高度常量存在（上下两半各 120px）', api.panel.PANEL_MIN.split === 120);
 check('上半屏想拖到 10px → 夹回最小高度 120px',
   api.clampAnalysisHeight(10, 700) === 120, String(api.clampAnalysisHeight(10, 700)));
-check('上半屏想拖到 9999px → 给下半屏留够最小高度（700-16-120=564）',
-  api.clampAnalysisHeight(9999, 700) === 564, String(api.clampAnalysisHeight(9999, 700)));
+check('上半屏想拖到 9999px → 给下半屏留够最小高度',
+  api.clampAnalysisHeight(9999, 700) === 700 - (api.panel.RESIZER_SIZE + 10) - 120,
+  String(api.clampAnalysisHeight(9999, 700)));
 check('拖到 300px → 原样保留（范围内不干预）', api.clampAnalysisHeight(300, 700) === 300);
 
 // ---- 2. 拖动分栏分隔条 ----
@@ -1500,6 +1542,182 @@ check('确认后发出 DELETE /api/v1/tutor/errors/11',
   Boolean(findCall('DELETE', '/api/v1/tutor/errors/11')));
 check('删除后重新拉了一次错题本（界面立刻同步）',
   fetchCalls.filter((call) => call.url.includes('/api/v1/tutor/errors')).length >= 2);
+
+/* ---------------------------------------------------------------------------
+   11.6 响应式布局与分隔条（任何窗口尺寸都能用、都能拖）
+   ---------------------------------------------------------------------------
+   这一节守的是"页面要适配各种大小 + 各功能区之间能拖动改大小"这两件事。
+   原先的坏法很典型（也是用户实际反馈的问题）：
+     · 断点定在 1280px，而 1280×720 笔记本、1920 屏在 150% 缩放下的
+       CSS 宽度正好就是 1280px —— 一大批人一开页面就掉进窄布局；
+     · 中档把**两根**垂直分隔条一起藏了，等于把"能拖"整个拿掉；
+     · 中档的左栏夹取仍去减"结果区宽度"，而结果区那时独占一整行，
+       算出的上限是负数 → 拖不动；
+     · 尺寸存的是像素值，窗口缩小后没人重新夹 → 横向溢出。
+   ------------------------------------------------------------------------- */
+console.log();
+console.log('='.repeat(72));
+console.log('响应式布局  三档断点 / 缩放后重新夹取 / 一键恢复布局');
+console.log('='.repeat(72));
+
+// ---- 1. 断点常量（CSS 侧的同名数字由 tools/check_frontend.py 交叉核对）----
+check('三档断点是 1200 / 900（与 CSS 媒体查询一致）',
+  api.tiers.wideMin === 1200 && api.tiers.midMin === 900,
+  `wide≥${api.tiers.wideMin} mid≥${api.tiers.midMin}`);
+check('分隔条栅格宽度改成 10px（8px 在触控板上太难点中）',
+  api.panel.RESIZER_SIZE === 10, `${api.panel.RESIZER_SIZE}px`);
+
+// ---- 2. 三档判定 ----
+setViewportWidth(1600);
+check('1600px → 宽档（三栏一行）', api.layoutTier() === 'wide', api.layoutTier());
+setViewportWidth(1366);
+check('1366px → 宽档（常见笔记本分辨率不能掉进窄布局）',
+  api.layoutTier() === 'wide', api.layoutTier());
+setViewportWidth(1000);
+check('1000px → 中档（两栏两行）', api.layoutTier() === 'mid', api.layoutTier());
+setViewportWidth(860);
+check('860px → 窄档（单栏自然堆叠）', api.layoutTier() === 'narrow', api.layoutTier());
+
+// ---- 3. 中档的"另一侧宽度"必须按 0 算 ----
+setViewportWidth(1600);
+const wideOther = api.panelOtherWidth('sidebar');
+setViewportWidth(1000);
+const midOther = api.panelOtherWidth('sidebar');
+check('宽档：另一侧宽度取真实值（两侧并排互相抢宽度）', wideOther > 0, `${wideOther}px`);
+check('中档：另一侧宽度按 0 算（结果区独占一行，不再抢宽度）',
+  midOther === 0, `${midOther}px`);
+
+// 这是用户能直接感觉到的差别：中档拖左栏必须真的动
+const midAllowed = api.clampPanelWidth(
+  'sidebar', 500, windowStub.innerWidth - 40, api.panelOtherWidth('sidebar'),
+);
+check('中档把左栏拖到 500px → 允许（不会被错误地钉在 200px 最小值）',
+  midAllowed === 500, `${midAllowed}px`);
+
+// 宽档：给代码区留够 400px 之后剩多少，就是左栏的上限
+setViewportWidth(1600);
+const codeAreaAt = (sidebarW, viewport) => (
+  (viewport - 40) - api.panel.RESIZER_SIZE * 2 - sidebarW - resultPaneElement._rect.width
+);
+const wideAllowed = api.clampPanelWidth('sidebar', 900, 1560, api.panelOtherWidth('sidebar'));
+check('宽档把左栏拖到 900px → 被夹住，且代码区仍保有 400px',
+  wideAllowed < 900 && codeAreaAt(wideAllowed, 1600) >= 400,
+  `左栏 ${wideAllowed}px，代码区 ${codeAreaAt(wideAllowed, 1600)}px`);
+
+// ---- 4. 同一档内窗口变小：显示值要重新夹，但**用户意图不能丢** ----
+setViewportWidth(1600);
+api.state.layout = { sidebar: 900, result: 380 };
+api.syncLayoutTiers();
+const atWide = parseInt(documentStub.documentElement._style['--sidebar-w'], 10);
+check('1600px 下按保存值恢复左栏，且代码区不被挤没',
+  atWide <= 900 && codeAreaAt(atWide, 1600) >= 400, `${atWide}px`);
+check('夹取只影响"显示值"，不篡改用户意图（state.layout 仍是 900）',
+  api.state.layout.sidebar === 900, String(api.state.layout.sidebar));
+
+// 把窗口缩到刚够宽档 —— 若不重新夹，900px 左栏会把代码区挤没
+setViewportWidth(1200);
+api.reclampLayout();
+const atNarrower = parseInt(documentStub.documentElement._style['--sidebar-w'], 10);
+check('窗口从 1600 缩到 1200：左栏被重新夹小（不再横向溢出）',
+  atNarrower < atWide, `${atWide}px → ${atNarrower}px`);
+check('窗口缩小后仍然保住用户意图（拉大回去能自动恢复）',
+  api.state.layout.sidebar === 900, String(api.state.layout.sidebar));
+
+// ---- 5. 跨档位：窄档交回 CSS，回到宽档恢复用户设置 ----
+setViewportWidth(700);
+api.syncLayoutTiers();
+check('窄档：清掉左栏固定宽度（交回 CSS 自然堆叠）',
+  documentStub.documentElement._style['--sidebar-w'] === undefined);
+check('窄档：清掉上下分栏高度',
+  documentStub.documentElement._style['--analysis-h'] === undefined);
+
+setViewportWidth(1600);
+api.syncLayoutTiers();
+const restored = parseInt(documentStub.documentElement._style['--sidebar-w'], 10);
+check('拖回宽档：自动恢复到用户要的宽度（而不是被压小后的值）',
+  restored > atNarrower && codeAreaAt(restored, 1600) >= 400,
+  `缩小后 ${atNarrower}px → 恢复 ${restored}px`);
+
+// 中档只清结果区宽度，左栏与分栏高度要留住
+setViewportWidth(1000);
+api.state.layout = { sidebar: 320, result: 380, analysis: 300 };
+api.syncLayoutTiers();
+check('中档：保留左栏宽度（两栏模式调左栏依然有意义）',
+  parseInt(documentStub.documentElement._style['--sidebar-w'], 10) === 320,
+  documentStub.documentElement._style['--sidebar-w']);
+check('中档：清掉结果区宽度（它独占一整行，横向宽度不归用户管）',
+  documentStub.documentElement._style['--result-w'] === undefined);
+check('中档：保留上下分栏高度（这一档分栏是有确定高度的，能拖）',
+  parseInt(documentStub.documentElement._style['--analysis-h'], 10) === 300,
+  documentStub.documentElement._style['--analysis-h']);
+
+// ---- 6. resize 事件真的会触发重夹（而不是只在初始化时算一次）----
+setViewportWidth(1600);
+api.state.layout = { sidebar: 900 };
+api.syncLayoutTiers();
+api.watchViewportForLayout();          // 注册 resize 监听
+setViewportWidth(1200);
+fireWindow('resize');
+drainIdle();                            // rAF 合并后才会执行
+const afterResize = parseInt(documentStub.documentElement._style['--sidebar-w'], 10);
+check('窗口缩放事件触发后，左栏被重新夹到合法值',
+  afterResize < 900 && afterResize >= 200, `${afterResize}px`);
+
+// ---- 7. 一键恢复默认布局 ----
+setViewportWidth(1600);
+api.state.layout = { sidebar: 900, result: 500, analysis: 400, code: 300 };
+api.syncLayoutTiers();
+documentStub.documentElement.style.setProperty('--code-height', '300px');
+el.codeDropzone.classList.add('is-height-fixed');
+api.resetLayout();
+const style = documentStub.documentElement._style;
+check('重置布局：清掉全部四个尺寸变量',
+  style['--sidebar-w'] === undefined && style['--result-w'] === undefined
+  && style['--analysis-h'] === undefined && style['--code-height'] === undefined);
+check('重置布局：清掉代码区"固定高度"标记（回到自适应铺满）',
+  !el.codeDropzone.classList.contains('is-height-fixed'));
+check('重置布局：本地存储里的尺寸也清空了',
+  JSON.parse(localStorageStub.getItem('ai-tutor.layout') || '{}').sidebar === undefined);
+check('重置布局：给出明确反馈', el.toast.textContent.includes('已恢复默认布局'),
+  el.toast.textContent);
+
+// ---- 8. 分隔条的"看得见"与键盘可达（静态要素）----
+const cssText = fs.readFileSync(path.join(BASE, 'frontend', 'css', 'style.css'), 'utf8');
+check('分隔条有常显抓手（::after 绘制，而不是悬停才可见）',
+  /\.resizer::after\s*\{/.test(cssText) && /\.resizer--col::after/.test(cssText));
+check('分隔条聚焦时有可见轮廓（键盘用户能找到）',
+  /\.resizer:focus-visible\s*\{[^}]*outline/.test(cssText));
+
+// ---- 9. 窄档下"代码区高度"不能失效 ----
+// 代码区高度是三档都该保留的设置（单栏下把代码区调高看长文件同样有用）。
+// 曾经因为"窄档直接 return"导致它在窄屏打开页面时被静默忽略。
+setViewportWidth(700);
+api.state.layout = { code: 260 };
+api.syncLayoutTiers();
+check('窄档：保存的代码区高度依然生效（不会被静默忽略）',
+  parseInt(documentStub.documentElement._style['--code-height'], 10) === 260,
+  documentStub.documentElement._style['--code-height']);
+
+// ---- 10. 从 localStorage 恢复的旧布局必须被夹 ----
+// 存档可能是上个显示器、或更宽的窗口里拖出来的（甚至手改过），
+// 直接塞进栅格就会横向溢出。恢复路径必须统一走"夹一遍再应用"。
+setViewportWidth(1600);
+documentStub.documentElement.style.removeProperty('--sidebar-w');
+documentStub.documentElement.style.removeProperty('--result-w');
+localStorageStub.setItem('ai-tutor.layout', JSON.stringify({ sidebar: 5000, result: 5000 }));
+api.state.layout = {};
+api.bindResizers();
+check('恢复布局：bindResizers 只把存档读进 state，不直接写栅格',
+  documentStub.documentElement._style['--sidebar-w'] === undefined
+  && api.state.layout.sidebar === 5000,
+  String(api.state.layout.sidebar));
+api.syncLayoutTiers();
+const restoredBad = parseInt(documentStub.documentElement._style['--sidebar-w'], 10);
+check('恢复布局：5000px 这种离谱存档会被夹到合法值（不横向溢出）',
+  restoredBad >= 200 && codeAreaAt(restoredBad, 1600) >= 400, `${restoredBad}px`);
+
+// 收尾：把视口恢复成默认值，免得影响后面可能新增的用例
+setViewportWidth(1600);
 
 /* ---------------------------------------------------------------------------
    12. 汇总

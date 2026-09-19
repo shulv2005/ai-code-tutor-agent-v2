@@ -165,6 +165,7 @@ const el = {
   // 顶部状态
   aiBadge: document.getElementById('aiBadge'),
   langBadge: document.getElementById('langBadge'),
+  resetLayout: document.getElementById('resetLayout'),
 
   // 代码区
   codeTitle: document.getElementById('codeTitle'),
@@ -2503,11 +2504,12 @@ async function loadStatus() {
    8. 面板尺寸拖动（需求三）
    --------------------------------------------------------------------------
    学生看代码时经常需要"左边收窄一点、代码区大一点"，固定三栏很难受。
-   这里用原生 JS 实现三根分隔条：
+   这里用原生 JS 实现四根分隔条：
 
-     垂直分隔条 ①  左栏 ｜ 代码区      → 改 --sidebar-w
-     垂直分隔条 ②  代码区 ｜ 结果区    → 改 --result-w
-     水平分隔条    代码区 ｜ 按钮区    → 改 --code-height
+     垂直分隔条 ①  左栏 ｜ 代码区        → 改 --sidebar-w（宽屏、中屏可用）
+     垂直分隔条 ②  代码区 ｜ 结果区      → 改 --result-w（仅宽屏可用）
+     水平分隔条    代码区 ｜ 按钮区      → 改 --code-height（各档都可用）
+     水平分隔条    分析结果 ｜ 错题本    → 改 --analysis-h（宽屏、中屏可用）
 
    最小宽度限制（需求指定，防止拖到看不见内容）：
      左侧栏 ≥ 200px ｜ 中间代码区 ≥ 400px ｜ 右侧结果区 ≥ 280px
@@ -2518,7 +2520,9 @@ async function loadStatus() {
        鼠标、触摸屏、触控笔一套代码全兼容，比 mousedown/mousemove 省心；
      · 拖动过程给 body 加类，靠 CSS 把整页鼠标样式锁成 col-resize/row-resize，
        否则鼠标移到别的元素上会变回箭头，看起来像"拖断了"；
-     · 尺寸记到 localStorage，刷新后还是学生习惯的样子。
+     · 尺寸记到 localStorage，刷新后还是学生习惯的样子；
+     · **窗口尺寸变化时要重新夹一遍**（reclampLayout）——
+       存的是像素值，窗口一小就可能超出新空间，不重夹就会横向溢出。
    ========================================================================== */
 
 /** 各面板的最小宽度/高度（需求三第 4 条明确指定的数值） */
@@ -2534,13 +2538,41 @@ const PANEL_MIN = {
 };
 
 /** 分隔条占位宽度，必须与 CSS 里的 --resizer 保持一致（用于算可用空间） */
-const RESIZER_SIZE = 8;
+const RESIZER_SIZE = 10;
 
 /** 单侧最多占布局宽度的比例：防止把一边拉到满、另一边只剩最小宽度 */
 const PANEL_MAX_RATIO = 0.6;
 
+/**
+ * 夹取高度时要扣掉的固定预留量（像素）。
+ *
+ * 这些数字与 CSS 里的实际尺寸一一对应，**不能用裸字面量散落在函数里**：
+ * 分隔条宽度一改（8px → 10px），几处预留量都要跟着动，
+ * 分散写的话必然漏掉一处，表现为"拖到底会多出/少掉几个像素"。
+ */
+const PANEL_RESERVED = {
+  // 分栏分隔条自身 10px + 它自己的上下 margin 各 5px（见 .resizer--row）
+  splitGutter: 10,   // 加在 RESIZER_SIZE 之上
+  // 代码卡片里除代码区之外的固定占用：标题行 + 分隔条（含 margin）+ 呼吸空间
+  codeChrome: 74,
+};
+
 /** 面板尺寸的本地存储键（刷新后沿用） */
 const LAYOUT_STORAGE_KEY = 'ai-tutor.layout';
+
+/**
+ * 布局断点，**必须与 CSS 里的媒体查询一致**。
+ *
+ * tools/check_frontend.py 会核对这两处数字，改一边忘了另一边会直接失败——
+ * 因为不一致的后果很隐蔽：CSS 按两栏排、JS 却按三栏算可用宽度，
+ * 拖起来就会突然跳到最小值，看起来像"拖动坏了"。
+ */
+const LAYOUT_TIERS = {
+  // ≥ 1200px：三栏一行，四根分隔条全可用
+  wideMin: 1200,
+  // 900~1199px：两栏两行（结果区独占一行）
+  midMin: 900,
+};
 
 /**
  * 把期望宽度夹到「最小值 ~ 可用上限」之间（纯函数，方便单测）。
@@ -2554,6 +2586,10 @@ const LAYOUT_STORAGE_KEY = 'ai-tutor.layout';
  * 上限怎么算：总宽减去两根分隔条、减去"另一侧"、再减去中间栏的最小宽度 400，
  * 剩下的才是这一侧能用的最大值。这样无论怎么拖，中间栏都不会被挤到 400 以下。
  * 两种上限取较小值：一个是"按比例"，一个是"给中间栏留够"。
+ *
+ * 注：这里一律按"两根分隔条"扣。中档（两栏两行）实际只有一根，
+ * 于是会少算 10px——这是**故意保守**：宁可少给 10px，
+ * 也不要在某个档位上算多了导致横向溢出。
  */
 function clampPanelWidth(kind, desired, layoutWidth, otherWidth) {
   const min = PANEL_MIN[kind];
@@ -2575,8 +2611,9 @@ function clampPanelWidth(kind, desired, layoutWidth, otherWidth) {
  * @returns {number} 夹好的高度
  */
 function clampCodeHeight(desired, cardHeight, actionsHeight) {
-  // 留出：标题行、按钮区、分隔条本身、一点呼吸空间
-  const reserved = actionsHeight + 70;
+  // 留出：标题行、按钮区、分隔条本身（含上下 margin，见 clampAnalysisHeight）、
+  // 一点呼吸空间。分隔条从 8px 改到 10px 之后这里跟着 +4。
+  const reserved = actionsHeight + PANEL_RESERVED.codeChrome;
   const max = Math.max(PANEL_MIN.code, cardHeight - reserved);
   return Math.round(Math.min(Math.max(desired, PANEL_MIN.code), max));
 }
@@ -2593,8 +2630,10 @@ function clampCodeHeight(desired, cardHeight, actionsHeight) {
  * 这样无论怎么拖，两半都不会有一边被挤没。
  */
 function clampAnalysisHeight(desired, paneHeight) {
-  // 分隔条 8px + 它自己的上下 margin 各 4px
-  const reserved = RESIZER_SIZE + 8;
+  // 分隔条自身 10px + 它自己的上下 margin 各 5px = 20px。
+  // 这两个数必须与 CSS 里 .resizer--row 的 height / margin 对上，
+  // 否则下半屏会算出多出来或少掉的几个像素。
+  const reserved = RESIZER_SIZE + PANEL_RESERVED.splitGutter;
   const max = Math.max(PANEL_MIN.split, paneHeight - reserved - PANEL_MIN.split);
   return Math.round(Math.min(Math.max(desired, PANEL_MIN.split), max));
 }
@@ -2625,19 +2664,33 @@ function saveLayout() {
 /**
  * 应用某个面板的宽度：写 CSS 变量 + 记到 state。
  *
- * @param {string} kind   'sidebar' 或 'result'
- * @param {number} width  像素宽度
+ * @param {string} kind       'sidebar' 或 'result'
+ * @param {number} width      像素宽度
+ * @param {boolean} remember  true = 这是用户拖出来的尺寸，记进 state.layout
+ *                            （也就是"用户意图"，会写进 localStorage）；
+ *                            false = 这只是按当前窗口夹出来的**显示值**，
+ *                            不要覆盖用户意图。
+ *
+ * 为什么要区分这两件事：窗口临时变小的时候，同一个"意图尺寸"能显示出来的
+ * 最大值会变小。如果夹出来的值直接覆盖了用户意图，那用户把窗口拉回去之后
+ * 也回不到自己拖出来的布局了——他得重新拖一遍。分开之后：
+ * 窗口小 → 显示被压小；窗口恢复 → 自动回到他要的宽度。
  */
-function applyPanelWidth(kind, width) {
-  state.layout[kind] = width;
+function applyPanelWidth(kind, width, remember = true) {
+  if (remember) state.layout[kind] = width;
   const variable = kind === 'sidebar' ? '--sidebar-w' : '--result-w';
   // 写在 :root 上，栅格里的 var() 会立刻生效（不用重排 JS 里的样式表）
   document.documentElement.style.setProperty(variable, `${width}px`);
 }
 
-/** 应用代码区高度：写 CSS 变量并标记"已经手动调过高度了" */
-function applyCodeHeight(height) {
-  state.layout.code = height;
+/**
+ * 应用代码区高度：写 CSS 变量并标记"已经手动调过高度了"。
+ *
+ * @param {number} height    像素高度
+ * @param {boolean} remember 见 applyPanelWidth 的说明
+ */
+function applyCodeHeight(height, remember = true) {
+  if (remember) state.layout.code = height;
   document.documentElement.style.setProperty('--code-height', `${height}px`);
   el.codeDropzone.classList.add('is-height-fixed');
 }
@@ -2648,14 +2701,50 @@ function applyCodeHeight(height) {
  * 拖动前这个变量是 CSS 里的默认值 `46%`（随面板高度成比例）；
  * 一旦用户拖过，就换成具体像素值——等价于"用户自己说了算"，
  * 与代码区高度（--code-height）的处理方式保持一致。
+ *
+ * @param {number} height    像素高度
+ * @param {boolean} remember 见 applyPanelWidth 的说明
  */
-function applyAnalysisHeight(height) {
-  state.layout.analysis = height;
+function applyAnalysisHeight(height, remember = true) {
+  if (remember) state.layout.analysis = height;
   document.documentElement.style.setProperty('--analysis-h', `${height}px`);
 }
 
 /**
- * 绑定一根分隔条的拖动（三根共用这一份逻辑）。
+ * 当前处在哪一档布局。判断依据是**窗口宽度**，与 CSS 的媒体查询一一对应。
+ *
+ * @returns {'wide'|'mid'|'narrow'}
+ *   wide   ≥1200px  三栏一行
+ *   mid    900~1199 两栏两行（结果区独占一行）
+ *   narrow <900px   单栏自然堆叠
+ */
+function layoutTier() {
+  const width = window.innerWidth || document.documentElement.clientWidth || 0;
+  if (width >= LAYOUT_TIERS.wideMin) return 'wide';
+  if (width >= LAYOUT_TIERS.midMin) return 'mid';
+  return 'narrow';
+}
+
+/**
+ * 「另一侧」面板的宽度——夹取计算要用它给中间栏留够 400px。
+ *
+ * 为什么要按档位区分：中屏及以上是"左右并排"，两侧互相抢宽度；但**中屏落到
+ * 两栏两行之后，结果区独占一整行，不再和左栏抢宽度**。这时如果还去减
+ * 结果区的宽度，算出来的可用上限会变成负数，`clampPanelWidth` 会直接把左栏
+ * 钉在 200px 最小值上——表现就是"拖动条完全不动"。
+ *
+ * @param {'sidebar'|'result'} kind
+ * @returns {number} 另一侧的宽度（两栏/单栏档返回 0）
+ */
+function panelOtherWidth(kind) {
+  if (layoutTier() !== 'wide') return 0;
+  return kind === 'sidebar'
+    ? el.resultPane.getBoundingClientRect().width
+    : el.sidebar.getBoundingClientRect().width;
+}
+
+/**
+ * 绑定一根分隔条的拖动（四根共用这一份逻辑）。
  *
  * @param {HTMLElement} handle 分隔条元素
  * @param {string} axis        'x' = 左右拖动；'y' = 上下拖动
@@ -2685,11 +2774,7 @@ function bindResizer(handle, axis, kind) {
     const actionsHeight = el.codeActions ? el.codeActions.getBoundingClientRect().height : 0;
     // 分栏拖动时，可分配的总高度就是右侧面板本身的高度
     const paneHeight = el.resultPane.getBoundingClientRect().height;
-    const otherWidth = axis === 'x'
-      ? (kind === 'sidebar'
-          ? el.resultPane.getBoundingClientRect().width
-          : el.sidebar.getBoundingClientRect().width)
-      : 0;
+    const otherWidth = axis === 'x' ? panelOtherWidth(kind) : 0;
 
     document.body.classList.add(axis === 'x' ? 'is-resizing-col' : 'is-resizing-row');
     handle.classList.add('is-dragging');
@@ -2750,9 +2835,8 @@ function bindResizer(handle, axis, kind) {
       const current = kind === 'sidebar'
         ? el.sidebar.getBoundingClientRect().width
         : el.resultPane.getBoundingClientRect().width;
-      const other = kind === 'sidebar'
-        ? el.resultPane.getBoundingClientRect().width
-        : el.sidebar.getBoundingClientRect().width;
+      // 中屏/窄屏下"另一侧"按 0 算，理由见 panelOtherWidth 的说明
+      const other = panelOtherWidth(kind);
       // 右侧栏的方向是反的：按 ← 应该是"变宽"（把分隔条往左推）
       const direction = kind === 'sidebar' ? (event.key === 'ArrowRight' ? 1 : -1)
                                            : (event.key === 'ArrowLeft' ? 1 : -1);
@@ -2801,7 +2885,15 @@ function bindResizer(handle, axis, kind) {
   });
 }
 
-/** 绑定四根分隔条，并恢复上次保存的尺寸 */
+/**
+ * 绑定四根分隔条，并把上次保存的尺寸读进 state。
+ *
+ * 注意这里**只读不应用**：真正写进 CSS 变量由 syncLayoutTiers() 负责
+ * （它知道当前是哪一档、也会顺手夹一遍）。以前在这里直接 apply，
+ * 等于把 localStorage 里的裸像素值原样写进栅格——存档是上个显示器上拖的
+ * （甚至是在更宽的窗口里拖的），在当前窗口下可能直接溢出。
+ * 收口到一处之后，"任何时候生效的尺寸都是合法的" 就是天然的。
+ */
 function bindResizers() {
   bindResizer(el.resizerLeft, 'x', 'sidebar');
   bindResizer(el.resizerRight, 'x', 'result');
@@ -2810,44 +2902,143 @@ function bindResizers() {
   bindResizer(el.resizerResultSplit, 'y', 'split');
 
   const saved = loadSavedLayout();
-  if (!saved) return;
-  if (typeof saved.sidebar === 'number') applyPanelWidth('sidebar', saved.sidebar);
-  if (typeof saved.result === 'number') applyPanelWidth('result', saved.result);
-  // 代码区高度只在用户真的调过之后才恢复，否则保持自适应的默认行为
-  if (typeof saved.code === 'number') applyCodeHeight(saved.code);
-  // 分栏高度同理：没拖过就保持 CSS 里的 46% 自适应比例
-  if (typeof saved.analysis === 'number') applyAnalysisHeight(saved.analysis);
+  if (saved) state.layout = { ...saved };
 }
 
 /* ==========================================================================
-   9. 屏幕很窄时自动收起分隔条
+   9. 窗口尺寸变化时重新适配（三档布局）
    --------------------------------------------------------------------------
-   CSS 已经在 1280px / 860px 两个断点把分隔条隐藏了，但 JS 里的
-   "另一侧宽度"之类的计算仍然会用到它们。窗口缩小到分隔条不可见时，
-   把用户拖出来的固定宽度清掉，让布局回到自适应，避免出现
-   "左栏 500px + 无法拖动"这种卡死的状态。
+   这一节解决两类"用着用着就乱了"的问题：
+
+   ① **档位切换**：宽屏拖出来的像素值，到了中屏/窄屏可能完全不合适
+      （例如宽屏把左栏拖到 600px，窗口缩到 1000px 后左栏就挤没了代码区）。
+      所以每换一档都要把该档用不上的固定尺寸清掉，回到 CSS 的默认比例。
+
+   ② **同一档内窗口变小**：尺寸存的是像素值，`clamp*` 只在**拖动时**执行，
+      于是"拖到 600px → 把窗口拉窄"就会横向溢出、甚至把某一栏挤到看不见。
+      因此监听 resize，把已保存的像素值重新夹一遍（reclampLayout）。
+
+   两件事都必须在 resize 时做，所以合并成一个入口 syncLayoutTiers()。
    ========================================================================== */
-function watchViewportForLayout() {
-  const narrow = window.matchMedia('(max-width: 1280px)');
 
-  /** 窄屏时清除固定尺寸，宽屏恢复用户设置 */
-  const sync = (isNarrow) => {
-    if (isNarrow) {
-      document.documentElement.style.removeProperty('--sidebar-w');
-      document.documentElement.style.removeProperty('--result-w');
-      // 窄屏下右侧面板变成"整行 + 自然高度"，百分比分栏没有参照高度，
-      // 分隔条也被 CSS 隐藏了，因此这里连分栏高度一起清掉，
-      // 否则会把上一次拖出来的像素值带进窄屏布局，撑出一片空白。
-      document.documentElement.style.removeProperty('--analysis-h');
-    } else {
-      if (typeof state.layout.sidebar === 'number') applyPanelWidth('sidebar', state.layout.sidebar);
-      if (typeof state.layout.result === 'number') applyPanelWidth('result', state.layout.result);
-      if (typeof state.layout.analysis === 'number') applyAnalysisHeight(state.layout.analysis);
+/**
+ * 把已保存的尺寸按**当前**窗口重新夹一遍。
+ *
+ * 只在宽/中档做（窄屏是自然堆叠，尺寸由内容决定，没有可夹的东西）。
+ * 每次都用保存值而不是当前渲染值来算：用户拖出来的"意图尺寸"要保住，
+ * 窗口只是临时变小了，拖大回去时应当恢复成他习惯的样子。
+ */
+function reclampLayout() {
+  const tier = layoutTier();
+  const layoutWidth = document.querySelector('.layout').getBoundingClientRect().width;
+
+  // 宽度/分栏只在"有分栏"的档位才有意义；窄档是自然堆叠，没有可夹的东西。
+  // 注意每个 apply* 的第三个参数传 false：这里算出来的是"当前窗口下能显示的值"，
+  // 不是用户意图。传 true 会把用户拖出来的宽度永久改成被压小后的值。
+  if (tier !== 'narrow') {
+    if (typeof state.layout.sidebar === 'number') {
+      applyPanelWidth('sidebar', clampPanelWidth(
+        'sidebar', state.layout.sidebar, layoutWidth, panelOtherWidth('sidebar'),
+      ), false);
     }
-  };
+    // 结果区只在宽档参与分栏；中档它独占一整行，宽度不是拖出来的
+    if (tier === 'wide' && typeof state.layout.result === 'number') {
+      applyPanelWidth('result', clampPanelWidth(
+        'result', state.layout.result, layoutWidth, panelOtherWidth('result'),
+      ), false);
+    }
+    if (typeof state.layout.analysis === 'number') {
+      applyAnalysisHeight(clampAnalysisHeight(
+        state.layout.analysis, el.resultPane.getBoundingClientRect().height,
+      ), false);
+    }
+  }
 
-  sync(narrow.matches);
-  narrow.addEventListener('change', (event) => sync(event.matches));
+  // 代码区高度**三档都保留**：它在单栏下同样有用（把代码区调高看长文件），
+  // 所以放在 narrow 的判断之外——否则窄屏打开页面时这个设置会静默失效。
+  if (typeof state.layout.code === 'number') {
+    applyCodeHeight(clampCodeHeight(
+      state.layout.code,
+      el.codeCard.getBoundingClientRect().height,
+      el.codeActions ? el.codeActions.getBoundingClientRect().height : 0,
+    ), false);
+  }
+}
+
+/**
+ * 按当前档位决定哪些 CSS 变量该生效、哪些该交还给 CSS 默认值。
+ *
+ * · 窄屏：全部清掉（单栏自然堆叠，任何固定宽度都只会帮倒忙）；
+ * · 中屏：保留左栏宽度与分栏高度（这两样依然有意义），清掉结果区宽度；
+ * · 宽屏：全部按用户保存的值恢复。
+ */
+function syncLayoutVars() {
+  const tier = layoutTier();
+  const root = document.documentElement.style;
+
+  if (tier === 'narrow') {
+    root.removeProperty('--sidebar-w');
+    root.removeProperty('--result-w');
+    root.removeProperty('--analysis-h');
+    // 代码区高度**不清**：它在单栏下同样有用（把代码区调高看长文件）
+    return;
+  }
+
+  if (tier === 'mid') {
+    root.removeProperty('--result-w');   // 结果区独占一行，横向宽度不归用户管
+  } else if (typeof state.layout.result === 'number') {
+    applyPanelWidth('result', state.layout.result);
+  }
+
+  if (typeof state.layout.sidebar === 'number') {
+    applyPanelWidth('sidebar', state.layout.sidebar);
+  }
+  if (typeof state.layout.analysis === 'number') {
+    applyAnalysisHeight(state.layout.analysis);
+  }
+}
+
+/** 档位切换 / 窗口缩放的统一入口 */
+function syncLayoutTiers() {
+  syncLayoutVars();
+  reclampLayout();
+}
+
+function watchViewportForLayout() {
+  // 用 window 的 resize 而不是 matchMedia 的 change：
+  // 同一档内缩放窗口同样要重新夹尺寸（那个场景 matchMedia 不会触发）。
+  let pending = false;
+  window.addEventListener('resize', () => {
+    if (pending) return;
+    pending = true;
+    // 用 requestAnimationFrame 合并连续 resize 事件——
+    // 拖动窗口边框会每毫秒触发一次，每次重排整个栅格会明显卡顿。
+    const schedule = window.requestAnimationFrame || ((fn) => window.setTimeout(fn, 16));
+    schedule(() => {
+      pending = false;
+      syncLayoutTiers();
+    });
+  });
+
+  syncLayoutTiers();
+}
+
+/**
+ * 一键恢复默认布局。
+ *
+ * 为什么需要它：分隔条可以拖，就可能拖出一个自己都不好用的布局
+ * （某栏拉到很宽、分栏只剩一条缝）。以前只能靠"双击分隔条"恢复，
+ * 但那个操作没有任何提示，用户根本不知道。给一个看得见的按钮最省事。
+ */
+function resetLayout() {
+  document.documentElement.style.removeProperty('--sidebar-w');
+  document.documentElement.style.removeProperty('--result-w');
+  document.documentElement.style.removeProperty('--analysis-h');
+  document.documentElement.style.removeProperty('--code-height');
+  el.codeDropzone.classList.remove('is-height-fixed');
+  state.layout = {};
+  saveLayout();
+  toast('已恢复默认布局', 'ok');
 }
 
 /* ==========================================================================
@@ -3060,6 +3251,8 @@ function bindActions() {
   el.refreshHistory.addEventListener('click', loadHistory);
   // 重新读一次错题本（在别的设备/标签页里做过诊断时用得上）
   el.refreshWrongBook.addEventListener('click', loadErrorBook);
+  // 一键恢复默认布局（拖乱了 / 换了台显示器之后不用自己慢慢调回来）
+  el.resetLayout.addEventListener('click', resetLayout);
 
   // ---- 本地项目库 ----
   // 重新扫描：学生把新作业拖进文件夹后点一下就刷新了

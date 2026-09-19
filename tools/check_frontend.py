@@ -85,6 +85,95 @@ def check_css_classes(page: dict, html: str, js: str, css: str) -> None:
         failures.append(f"{page['name']} 有 {len(undefined)} 个类名未定义")
 
 
+def check_layout_contract(page: dict, css: str, js: str) -> None:
+    """3.6 布局契约：CSS 的媒体查询必须与 JS 的断点常量一致。
+
+    为什么值得单独一条检查：
+    布局断点写在两个地方——CSS 用 `@media`，JS 用 `LAYOUT_TIERS` 判定当前档位
+    （决定"另一侧宽度"怎么算、哪些固定尺寸该清掉）。两处一旦对不上，
+    后果是**拖动看起来坏了**：CSS 已经按两栏排，JS 却还按三栏算可用宽度，
+    算出来的上限是负数，于是分隔条纹丝不动。这种 bug 不报错、只表现为"拖不动"，
+    极难从现象反推原因，所以用一条检查把它钉死。
+
+    同理核对分隔条宽度：CSS 的 `--resizer` 与 JS 的 `RESIZER_SIZE`
+    必须相同，否则夹取计算会按错的宽度算，拖到底会多出或少掉几个像素。
+    """
+    print()
+    print("=" * 72)
+    print(f"3.6 布局契约：CSS 媒体查询 ↔ JS 断点（{page['name']}）")
+    print("=" * 72)
+
+    wide = re.search(r"LAYOUT_TIERS\s*=\s*\{[^}]*wideMin:\s*(\d+)", js, re.DOTALL)
+    mid = re.search(r"LAYOUT_TIERS\s*=\s*\{[^}]*midMin:\s*(\d+)", js, re.DOTALL)
+    resizer_js = re.search(r"RESIZER_SIZE\s*=\s*(\d+)", js)
+    resizer_css = re.search(r"--resizer:\s*(\d+)px", css)
+
+    if not (wide and mid and resizer_js and resizer_css):
+        failures.append(f"{page['name']} 找不到布局断点或分隔条宽度常量")
+        print("  找不到断点常量 ×")
+        return
+
+    wide_min = int(wide.group(1))
+    mid_min = int(mid.group(1))
+
+    # JS 判定用 `>= wideMin` / `>= midMin`，对应 CSS 就是中档的两个边界：
+    #   中档 = max-width (wideMin-1) and min-width (midMin)
+    #   窄档 = max-width (midMin-1)
+    # 宽档没有媒体查询——基础 .layout 规则就是它（不写媒体查询时即三栏一行）。
+    mid_query = f"@media (max-width: {wide_min - 1}px) and (min-width: {mid_min}px)"
+    narrow_query = f"@media (max-width: {mid_min - 1}px)"
+
+    problems: list[str] = []
+    if mid_query not in css:
+        problems.append(f"CSS 缺少 {mid_query}")
+    if narrow_query not in css:
+        problems.append(f"CSS 缺少 {narrow_query}")
+    if resizer_js.group(1) != resizer_css.group(1):
+        problems.append(
+            f"分隔条宽度不一致：JS RESIZER_SIZE={resizer_js.group(1)} "
+            f"vs CSS --resizer={resizer_css.group(1)}px"
+        )
+
+    # 分隔条的可用性：中档必须留着调左栏与代码高度的那几根，
+    # 窄档才全部收起（宽度没有"分栏"可言）。曾经中档把垂直分隔条**全部**
+    # 藏掉，等于把"能拖动改大小"整个拿走了——所以这里按档位核对。
+    mid_block = _media_block(css, mid_query)
+    narrow_block = _media_block(css, narrow_query)
+    if "#resizerRight { display: none; }" not in mid_block:
+        problems.append("中档没有把结果区的分隔条藏掉（结果区已独占整行）")
+    if re.search(r"#resizerLeft[^{]*\{[^}]*display:\s*none", mid_block):
+        problems.append("中档把左侧栏分隔条也藏了——两栏下调左栏宽度仍有意义")
+    if "#resizerCode" in narrow_block:
+        problems.append("窄档把代码区高度分隔条藏了——单栏下它仍然有用")
+
+    print(f"  JS 断点     : 宽 ≥{wide_min}px / 中 ≥{mid_min}px（宽档＝基础布局，无媒体查询）")
+    print(f"  分隔条宽度  : JS {resizer_js.group(1)}px / CSS {resizer_css.group(1)}px")
+    print(f"  两档媒体查询与分隔条可用性 : {'齐全 ✓' if not problems else '有问题 ✗'}")
+    for item in problems:
+        print(f"      · {item}")
+    if problems:
+        failures.append(f"{page['name']} 布局契约不一致（{len(problems)} 处）")
+
+
+def _media_block(css: str, query: str) -> str:
+    """取出某个媒体查询的整段内容（按大括号配对，避免嵌套时截断）。"""
+    start = css.find(query)
+    if start == -1:
+        return ""
+    brace = css.find("{", start)
+    if brace == -1:
+        return ""
+    depth = 0
+    for index in range(brace, len(css)):
+        if css[index] == "{":
+            depth += 1
+        elif css[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[brace + 1 : index]
+    return ""
+
+
 def check_hidden_toggle(page: dict, html: str, js: str, css: str) -> None:
     """3.5 显隐控制检查：JS 用 .hidden 控制的元素，CSS 不能把 hidden 覆盖掉。
 
@@ -324,6 +413,7 @@ def main() -> int:
         check_syntax(page)
         check_dom_ids(page, html, js)
         check_css_classes(page, html, js, css)
+        check_layout_contract(page, css, js)
         check_hidden_toggle(page, html, js, css)
         check_api_paths(page, js, operations)
         if index < len(PAGES) - 1:
