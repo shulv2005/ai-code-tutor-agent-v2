@@ -4,7 +4,12 @@
 这个服务整合了哪些东西
 ===========================================================================
 一、面向学生的「AI 代码导师」模块（都不需要 Docker）
-    /api/v1/tutor      检测 / 生成注释 / 自动改错 + 学习历史（前端三个按钮用的轻量版）
+    /api/v1/tutor      检测 / 生成注释 / 自动改错 / **诊断（错题本 + 举一反三）**
+                       + 错题本查询 + 学习历史（前端按钮用的轻量版）
+                       POST /diagnose 会结合该学生的历史错题出题，并把错误归档
+    /api/analyze       POST：上条的**兼容别名**，按需求文档的
+                       `{student_id, language, code_content}` JSON 契约调用，
+                       内部直接转调 /api/v1/tutor/diagnose
     /api/v1/library    本地项目库：扫描 / 浏览 / 在线编辑 / 替换 / 删除（删除进 .trash）
     /api/v1/files      文件自动分类：把 .c/.h/.java/.py 归档到 c/ java/ python/，
                        并接收前端拖拽上传（POST /upload）
@@ -56,6 +61,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.api.compat import router as compat_router
 from app.api.v1.router import api_router
 from app.core.config import PROJECT_ROOT, Settings, get_settings
 from app.core.database import dispose_engine, init_db
@@ -200,6 +206,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 3) 路由：**所有业务模块都在 api_router 里挂载**（见 app/api/v1/router.py），
     #    这里只 include 一次。新增模块时改路由文件即可，不用动 main.py。
     app.include_router(api_router, prefix=settings.app.api_v1_prefix)
+
+    # 3.5) 兼容别名：POST /api/analyze
+    #      唯一的例外——它刻意挂在 /api 而不是 /api/v1 下，因为需求文档
+    #      指定的就是这个路径。实现上它直接转调规范接口，没有第二份业务逻辑，
+    #      因此不会成为"两条接口行为不一致"的技术债。
+    #      也因为它不在 /api/v1 前缀下，log_route_inventory 不会统计到它，
+    #      启动横幅里少一条属正常现象。
+    app.include_router(compat_router, prefix="/api")
 
     # 4) 前端静态页面：把 frontend/ 挂到 /ui，并把根路径重定向过去。
     #    这样同学双击 start.bat 后打开 http://127.0.0.1:8000 就能直接看到界面。

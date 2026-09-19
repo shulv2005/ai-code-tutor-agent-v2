@@ -922,6 +922,9 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 .btn--accent:hover:not(:disabled) { background: #255ea0; border-color: #255ea0; }
 
 .btn--warn { background: var(--warn); border-color: var(--warn); color: #fff; }
+/* 「诊断 + 举一反三」按钮：用成功色，与其它三个 AI 按钮区分开——
+   它是唯一一个会读写错题本、结果跨次累积的按钮 */
+.btn--ok { background: var(--ok); border-color: var(--ok); color: #fff; }
 .btn--warn:hover:not(:disabled) { background: #9c6619; border-color: #9c6619; }
 
 /* 危险操作（删除）：平时是描边样式，不抢眼；悬停才变红，提醒"这一下不可逆" */
@@ -1074,3 +1077,237 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   flex: 0 0 auto;
   height: var(--code-height, 320px);
 }
+
+/* ==========================================================================
+   10. 右侧结果区：上下分栏（分析结果 / 错题本 & 举一反三）
+   --------------------------------------------------------------------------
+   上半 #analysisCard   = 当前代码的分析结果（检测 / 注释 / 改错 / 诊断结论）
+   下半 #wrongBookCard  = 错题本 & 举一反三（跨次累积，始终可见）
+   中间一根水平分隔条，两半的高度比例写进 CSS 变量 --analysis-h。
+
+   为什么用百分比 flex-basis 而不是固定 px：
+   窗口一变矮，固定 px 就会让下半屏被压成一条缝甚至完全看不见。
+   百分比随容器高度成比例变化，学生拖过一次之后才由他自己说了算。
+   ========================================================================== */
+.pane--split {
+  --analysis-h: 46%;   /* 上半部分占比；JS 拖分隔条时改这个值 */
+  /* 两半各自滚动，外层不再滚：否则会出现"双滚动条"，学生不知道在拖哪个 */
+  overflow: hidden;
+  gap: 0;
+}
+
+.pane--split > .card { min-height: 0; }
+
+#analysisCard { flex: 0 0 var(--analysis-h); }
+#wrongBookCard { flex: 1 1 0; }
+
+/* 卡片标题固定、内容区自己滚动 —— 错题本的知识点解析可能很长，
+   不能让标题跟着一起滚出屏幕（学生就不知道自己看的是哪一栏了）。 */
+.card__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 给滚动条留一点位置，免得它压住内容的右边缘 */
+  padding-right: 2px;
+}
+
+/* ---------- 10.1 诊断结论（上半屏）---------- */
+.verdict { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.verdict__badge {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--ok-soft);
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+/* 有错误时换成红色（JS 加 .is-error）；颜色是最直观的信号 */
+.verdict__badge.is-error { background: var(--error-soft); color: var(--error); }
+
+.verdict__type { font-size: 13px; color: var(--text-dim); }
+
+/* 归档提示：告诉学生"这次错误已经记进错题本了"，而不是悄悄写库 */
+#diagnoseLogged { margin: 0; }
+
+/* ---------- 10.2 静态知识点标签（不是筛选按钮，因此不可点）---------- */
+.chips--static { margin-bottom: 0; }
+
+.chip--static {
+  cursor: default;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* ---------- 10.3 易错知识点（按次数画条形）---------- */
+.weak { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.weak__item { font-size: 12.5px; }
+
+.weak__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.weak__count { color: var(--text-faint); white-space: nowrap; }
+
+/* 条形长度用内联 width 百分比控制，宽度 = 该知识点次数 / 最高次数 */
+.weak__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.weak__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* ---------- 10.4 举一反三：新题目 ---------- */
+.exercise {
+  border: 1px solid var(--accent-border);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  padding: 11px 13px;
+}
+
+.exercise__title { margin: 0; font-size: 13.5px; font-weight: 600; }
+.exercise__desc { margin: 6px 0 0; font-size: 13px; white-space: pre-wrap; }
+
+/* 提示默认折叠（details/summary），学生先自己想，卡住了再展开 */
+.exercise__hint { margin-top: 9px; font-size: 12.5px; }
+
+.exercise__hint summary {
+  cursor: pointer;
+  color: var(--accent);
+  user-select: none;
+}
+
+.exercise__hint p {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+/* ---------- 10.5 历史错题明细 ---------- */
+.errorlog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+
+.errorlog__item {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.errorlog__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.errorlog__kp { font-weight: 600; font-size: 12.5px; }
+
+.errorlog__meta { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+
+.errorlog__feedback {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.errorlog__actions { margin-top: 6px; text-align: right; }
+
+/* ---------- 10.6 Markdown 渲染区（AI 生成的知识点解析）----------
+   这里是全页面唯一"把 HTML 直接写进 DOM"的地方，因此：
+     · 内容先过 DOMPurify 消毒（见 js 的 renderMarkdown），
+     · 样式上把默认的浏览器 margin 收一收，避免段落之间空隙过大。 */
+.markdown {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  font-size: 13.5px;
+  margin: 12px 0 6px;
+}
+
+.markdown p { margin: 7px 0; }
+.markdown ul, .markdown ol { margin: 7px 0; padding-left: 22px; }
+.markdown li { margin: 3px 0; }
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #eef2f6;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* 代码块：与页面其它代码区保持一致的浅底 + 等宽字体 */
+.markdown pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: #f7f9fb;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.markdown blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent-border);
+  color: var(--text-dim);
+}
+
+.markdown table { border-collapse: collapse; font-size: 12.5px; }
+.markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
+
+/* ---------- 10.7 上下分栏在窄屏下退回"自然堆叠" ----------
+   窄屏时右侧面板变成整行、高度由内容决定（没有确定高度），
+   此时百分比分栏与拖动都没有意义，因此：
+     · 让两半按内容自然铺开、外层恢复滚动；
+     · 把分隔条藏掉，免得学生拖了半天没反应。 */
+@media (max-width: 1280px) {
+  .pane--split { overflow: visible; }
+  .pane--split > .card { flex: none; }
+  .card__scroll { overflow: visible; }
+  #resizerResultSplit { display: none; }
+}
+
+@media (max-width: 860px) {
+  /* 单栏时左侧栏与结果区都自然铺开（与 .sidebar,.pane 的既有规则保持一致） */
+  .pane--split { overflow: visible; }
+  .card__scroll { overflow: visible; }
+}
+

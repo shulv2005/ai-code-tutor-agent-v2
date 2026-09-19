@@ -1,20 +1,29 @@
 """AI 代码导师接口：/api/v1/tutor
 
-面向前端「学生代码学习」页面的四个能力：
+面向前端「学生代码学习」页面的能力：
   POST /analyze   上传文件或贴代码 -> 自动识别语言 + 解析结构（不依赖大模型）
   POST /check     AI 检测：评分 + 问题清单 + 做得好的地方
   POST /comment   AI 生成通俗中文注释
   POST /fix       AI 自动改错：修正后代码 + 逐条修改说明
+  POST /diagnose  AI 诊断（错题本 + 举一反三）：诊断结论 + 新题目 + 知识点解析
+  GET  /errors    错题本列表 + 易错知识点聚合
+  DELETE /errors/{id}  删除一条错题
   GET  /history   历史记录列表 / 详情
 
 设计说明：
 - `/analyze` 完全不依赖大模型，因此**没配置模型时前端依然可用**，
-  能演示文件上传、语言分类、代码结构展示；三个 AI 按钮会给出明确提示。
-- 三个 AI 接口的结果都会写入历史记录，供课堂回顾。
-- **模型可以在页面上选**：三个 AI 接口都接受可选的两个表单字段
+  能演示文件上传、语言分类、代码结构展示；几个 AI 按钮会给出明确提示。
+- 几个 AI 接口的结果都会写入历史记录（流水账），供课堂回顾。
+- `/diagnose` 额外做两件事（见该函数的 docstring）：
+    1. 调用前先按学号捞出**最近的历史错题**，拼进提示词；
+    2. 判定有错时把这次错误写进**错题本**（student_error_logs）。
+- **模型可以在页面上选**：AI 接口都接受可选的表单字段
   `model_id`（用哪个模型）与 `api_key`（用户自己填的 Key），
   另外认 `X-Session-Id` 请求头（Key 存在服务端内存会话里的时候用）。
   一个都不传时，就用后端 `.env` 里配好的默认模型——保证老用法完全不受影响。
+- **学生身份**：错题本按学号归档，前端通过 `X-Student-Id` 请求头
+  （或同名表单字段）传学号进来。没有学号就无法归档，接口会直接 400——
+  这比默默存成 "anonymous" 然后让整个班的错题混在一起要好得多。
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from fastapi import (
     status,
 )
 
-from app.agents.tutor_agent import TutorAgent
+from app.agents.tutor_agent import TutorAgent, format_error_history
 from app.api.deps import ApiKeyManagerDep, AppSettingsDep, DbSession, TutorAgentDep
 from app.core.api_key_manager import SESSION_HEADER, ApiKeyManager
 from app.core.config import Settings
@@ -48,6 +57,15 @@ from app.core.llm_client import (
 )
 from app.core.trace import current_trace_id
 from app.models.tutor import TutorRecord
+from app.schemas.diagnose import (
+    DiagnoseAnalysis,
+    DiagnoseResponse,
+    ErrorLogListResponse,
+    ErrorLogRead,
+    KnowledgePointStat,
+    NewExercise,
+    WrongQuestionBook,
+)
 from app.schemas.tutor import (
     AnalyzeResponse,
     CheckIssue,
@@ -77,6 +95,23 @@ router = APIRouter()
 # 单次上传的代码大小上限：学生作业不会很大，超过基本是误传了文件
 MAX_CODE_BYTES = 512 * 1024
 
+# 学生身份的请求头名。用请求头而不是每个表单都带一个字段：
+# 和 X-Session-Id 一样的理由——它是"这次请求属于谁"的上下文，不属于业务参数。
+STUDENT_HEADER = "X-Student-Id"
+
+# 学号长度上限。截断而不是报错：宁可存一个被截断的学号，
+# 也不要因为多打了一个空格/换行就让整个诊断失败。
+MAX_STUDENT_ID_LEN = 64
+
+# 每次诊断喂给模型的历史错题条数（需求指定 5-10 条）。
+# 取 8 是因为：少于 5 条总结不出规律，多于 10 条既费 token 又会让
+# 模型把注意力分散到很久以前的错题上。
+HISTORY_ERROR_LIMIT = 8
+
+# 易错知识点聚合返回几条（前端用进度条展示，5 条正好一屏）
+WEAK_POINT_LIMIT = 5
+
+
 
 # ---------------------------------------------------------------------------
 # 公共逻辑
@@ -90,6 +125,26 @@ def _resolve_language(filename: str) -> str:
             detected = language
             break
     return detected or "unknown"
+
+
+def _resolve_student_id(*candidates: str | None) -> str:
+    """从若干候选值里挑出学号（表单字段优先，其次请求头）。
+
+    没有学号时抛 400 而不是兜底成 "anonymous"：如果默默归档到一个公共学号，
+    一个班的学生就会共用同一个错题本，"针对薄弱点出题"立刻变成一句空话，
+    而且这种错误**不会报错、只会静默出错**——最难排查的那一类。
+    """
+    for value in candidates:
+        text = (value or "").strip()
+        if text:
+            return text[:MAX_STUDENT_ID_LEN]
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "缺少学号：请在页面左侧「我的学号」里填写，"
+            f"或通过 {STUDENT_HEADER} 请求头传入。错题本需要按学号归档。"
+        ),
+    )
 
 
 def _analyze(filename: str, code: str) -> AnalyzeResponse:
@@ -502,6 +557,209 @@ async def fix_code(
         record_id=record.id,
         trace_id=current_trace_id(),
     )
+
+
+# ---------------------------------------------------------------------------
+# 诊断（错题本 + 举一反三）
+# ---------------------------------------------------------------------------
+@router.post(
+    "/diagnose",
+    response_model=DiagnoseResponse,
+    summary="AI 诊断：错题本 + 举一反三",
+    description=(
+        "一次调用同时产出**上半屏的诊断结论**与**下半屏的错题本内容**。\n\n"
+        "与 `/check` 的区别：`/check` 是「给这份代码打个分、列问题」，"
+        "无状态、每次结果只跟代码有关；`/diagnose` 是「结合你以前的错题，"
+        "看看你这次又错在哪、该补哪个知识点」，是**有状态**的——"
+        "它会把该学生最近的历史错题一起喂给模型，并在判定有错时归档进错题本。\n\n"
+        "因此它需要学号（`X-Student-Id` 请求头或 `student_id` 表单字段）。"
+    ),
+)
+async def diagnose_code(
+    session: DbSession,
+    agent: TutorAgentDep,
+    settings: AppSettingsDep,
+    manager: ApiKeyManagerDep,
+    file: UploadFile | None = File(default=None),
+    code: str | None = Form(default=None),
+    filename: str | None = Form(default=None),
+    student_id: str | None = Form(default=None, description="学号；也可走 X-Student-Id 头"),
+    model_id: str | None = Form(default=None, description="用哪个模型（页面下拉框选的）"),
+    api_key: str | None = Form(default=None, description="用户自己填的 API Key（可空）"),
+    x_session_id: str | None = Header(default=None, alias=SESSION_HEADER),
+    x_student_id: str | None = Header(default=None, alias=STUDENT_HEADER),
+) -> DiagnoseResponse:
+    """完整流程：查历史错题 -> 拼提示词 -> 调模型 -> 写错题本 -> 返回。
+
+    每一步的取舍都写在下面的注释里，这里先说三处最容易踩的地方：
+
+    1. **历史错题必须在调用模型之前查**，而且是"上一次诊断留下的"，不含本次。
+       如果先写库再查，模型就会看到一条还没被分析的"本次错误"，逻辑上自相矛盾。
+    2. **只有 status == "error" 才写错题本**。代码没问题时也写，错题本会被
+       "无错误"记录稀释，「易错知识点」统计直接失真。
+    3. **模型没返回可解析 JSON 时返回 502，而不是当成"无错误"**。后者会让
+       一次 AI 跑偏被伪装成"你的代码很好"，是这里最危险的一种静默失败。
+    """
+    content, name = await _read_code(file, code, filename)
+    language = _resolve_language(name)
+    if language == "unknown":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="无法识别代码语言，请使用 .c / .java / .py 等受支持的扩展名。",
+        )
+    # 学号：表单字段优先，其次请求头（前端统一走请求头，见 js 的 api()）
+    sid = _resolve_student_id(student_id, x_student_id)
+
+    # ---- 1. 查历史错题（本次调用要用它，所以必须在调模型之前）----
+    history = await TutorService.recent_errors(
+        session, student_id=sid, limit=HISTORY_ERROR_LIMIT
+    )
+    history_text = format_error_history(history)
+    logger.info(
+        "诊断开始：student=%s language=%s code=%d 字，历史错题 %d 条",
+        sid,
+        language,
+        len(content),
+        len(history),
+    )
+
+    # ---- 2. 拼提示词 + 调用大模型 ----
+    try:
+        async with _active_agent(
+            agent, settings, manager, x_session_id, model_id, api_key
+        ) as active:
+            result = await active.diagnose(
+                content, filename=name, language=language, history_text=history_text
+            )
+    except Exception as exc:  # noqa: BLE001 - 统一映射为友好错误
+        raise _ai_error(exc) from exc
+
+    # ---- 3. 解析失败就让学生重试，绝不伪造"无错误"结论 ----
+    if not result.parsed:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "AI 没有按约定格式返回结果（可能被截断或跑偏），请重试一次；"
+                "若反复失败，换一段更短的代码或换一个模型试试。"
+            ),
+        )
+
+    analysis_raw = result.payload["analysis"]
+    book_raw = result.payload["wrong_question_book"]
+
+    # ---- 4. 写流水账（无论对错都记，学生能回看"我诊断过哪些代码"）----
+    record = await TutorService.record(
+        session,
+        filename=name,
+        language=language,
+        code=content,
+        action="diagnose",
+        summary=analysis_raw["message"][:500],
+        result_json=json.dumps(result.payload, ensure_ascii=False),
+        model=result.model,
+        duration_ms=result.duration_ms,
+    )
+
+    # ---- 5. 判错 -> 写错题本 ----
+    logged = False
+    error_log_id: int | None = None
+    if analysis_raw["status"] == "error":
+        saved = await TutorService.save_error(
+            session,
+            student_id=sid,
+            code_snippet=content,
+            language=language,
+            error_type=analysis_raw["error_type"],
+            knowledge_points=analysis_raw["knowledge_points"],
+            ai_feedback=analysis_raw["message"],
+            filename=name,
+            source="diagnose",
+            record_id=record.id,
+            model=result.model,
+        )
+        if saved is not None:
+            logged = True
+            error_log_id = saved.id
+            logger.info("已记入错题本：student=%s id=%s kp=%s", sid, saved.id, saved.knowledge_point)
+
+    # ---- 6. 错题本统计：在写库**之后**再查，让返回值与前端刷新后看到的一致 ----
+    # 若在写库前查，前端会同时拿到"共 5 条"（响应）和"共 6 条"（列表接口），
+    # 学生一定会以为页面出 bug 了。
+    total = await TutorService.count_errors(session, student_id=sid)
+    weak = await TutorService.weak_points(session, student_id=sid, limit=WEAK_POINT_LIMIT)
+
+    return DiagnoseResponse(
+        student_id=sid,
+        filename=name,
+        language=language,
+        language_label=LANGUAGE_LABELS.get(language, language),
+        analysis=DiagnoseAnalysis(**analysis_raw),
+        wrong_question_book=WrongQuestionBook(
+            history_summary=book_raw["history_summary"],
+            new_exercise=NewExercise(**book_raw["new_exercise"]),
+            knowledge_explanation=book_raw["knowledge_explanation"],
+        ),
+        history_count=len(history),
+        history_total=total,
+        weak_points=[KnowledgePointStat(knowledge_point=name_, count=count) for name_, count in weak],
+        logged=logged,
+        error_log_id=error_log_id,
+        model=result.model,
+        duration_ms=result.duration_ms,
+        record_id=record.id,
+        warnings=result.warnings,
+        trace_id=current_trace_id(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 错题本查询
+# ---------------------------------------------------------------------------
+@router.get(
+    "/errors",
+    response_model=ErrorLogListResponse,
+    summary="错题本列表 + 易错知识点聚合",
+    description=(
+        "按学号列出历史错题与易错知识点 Top N。"
+        "前端下半屏在页面加载时调它，把上次的诊断结果先摆出来，"
+        "学生不用每次重新点一遍诊断才能看到自己的错题本。"
+    ),
+)
+async def list_errors(
+    session: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    student_id: str | None = Query(default=None, description="学号；也可走 X-Student-Id 头"),
+    x_student_id: str | None = Header(default=None, alias=STUDENT_HEADER),
+) -> ErrorLogListResponse:
+    sid = _resolve_student_id(student_id, x_student_id)
+    items, total = await TutorService.list_errors(
+        session, student_id=sid, limit=limit, offset=offset
+    )
+    weak = await TutorService.weak_points(session, student_id=sid, limit=WEAK_POINT_LIMIT)
+    return ErrorLogListResponse(
+        student_id=sid,
+        total=total,
+        items=[ErrorLogRead.model_validate(item) for item in items],
+        weak_points=[KnowledgePointStat(knowledge_point=name, count=count) for name, count in weak],
+    )
+
+
+@router.delete(
+    "/errors/{error_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除一条错题",
+    description="只允许删除**自己**的错题：学号会作为过滤条件一起查，删别人的会返回 404。",
+)
+async def delete_error(
+    error_id: int,
+    session: DbSession,
+    student_id: str | None = Query(default=None),
+    x_student_id: str | None = Header(default=None, alias=STUDENT_HEADER),
+) -> None:
+    sid = _resolve_student_id(student_id, x_student_id)
+    if not await TutorService.delete_error(session, error_id=error_id, student_id=sid):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="错题不存在")
 
 
 # ---------------------------------------------------------------------------

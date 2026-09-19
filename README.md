@@ -53,23 +53,29 @@ cd ai-code-tutor-agent
 
 ## 1. 项目功能
 
-### 1.1 学生端：四个能力串成一条"写代码"的闭环
+### 1.1 学生端：五个能力串成一条"写代码"的闭环
 
 | 能力 | 一句话说明 | 需要大模型吗 |
 | --- | --- | --- |
 | **AI 自动检测** | 先本地查语法错误（精确到行列），再让 AI 查逻辑、边界与算法，给出评分 + 问题清单 + 学习建议 | 可选（没配则只出本地结论） |
 | **AI 代码改错** | 分析错误 → 给出**修正后的完整代码** → 用四问讲透：错在哪 / 为什么错 / 怎么改 / 以后如何避免 | 可选（没配则只出本地分析） |
 | **AI 注释生成** | 三层中文注释：文件级 + 函数级（功能/参数/返回值）+ 关键逻辑行内注释，按语言规范书写 | 可选 |
+| **错题本 + 举一反三** | 每次诊断判定有错时，把错误按**知识点**归档到你的学号下；下次诊断会先把最近 8 条历史错题一起交给 AI，让它总结你的易错规律，并针对性出一道新题 + 知识点解析（含 Markdown 代码示例） | 需要 |
 | **在线编辑** | 预览区直接改代码（行号 / Tab 缩进 / 回车自动缩进 / `Ctrl+S` 保存），改完能一键送回 AI 再检测 | 不需要 |
 
-围绕这四件事还有一套"管理作业"的工具：
+右侧「分析结果」面板是**上下分栏**的：上半屏放当前代码的诊断结论（错误类型 / 说明 / 涉及的知识点），
+下半屏放错题本与举一反三（易错知识点条形图、新题目、Markdown 解析、历史错题明细），
+中间那根分隔条可以拖动，高度会记住。
+
+围绕这些能力还有一套"管理作业"的工具：
 
 | 工具 | 说明 |
 | --- | --- |
 | **本地项目库** | 扫描你的代码文件夹并按语言分类。默认目录 `data/library/`，页面上**一直显示**它的完整路径，点「复制」即可粘到资源管理器打开 |
 | **替换 / 删除** | 用本机另一个同类型文件覆盖某个作业；删除是移进 `.trash/` 回收站（可找回）。两个操作都要二次确认 |
 | **文件自动分类** | 把散放的 `.c`/`.h`/`.java`/`.py` 归档到 `c/` `java/` `python/`，同名不覆盖、可重复执行 |
-| **学习历史** | 每一次检测/注释/改错都落库，可回看当时的完整代码 |
+| **学习历史** | 每一次检测/注释/改错/诊断都落库，可回看当时的完整代码 |
+| **我的学号** | 错题本按学号归档（存在浏览器本地，不是凭据）；换台电脑填同一个学号就能接着练，删错题也只能删自己的 |
 
 > 想让学生只能看、不能改（例如项目库指向老师共享的公共目录）：
 > 在 `.env` 里设 `LIBRARY__ALLOW_WRITE=false`，页面上编辑 / 替换 / 删除的入口会自动消失。
@@ -493,7 +499,7 @@ curl -X DELETE "http://127.0.0.1:8000/api/v1/library/file?path=python/homework1.
 
 ## 6. 接口一览
 
-共 **38 条路径 / 42 个接口**。启动后交互式文档在 **<http://127.0.0.1:8000/docs>**，
+共 **42 条路径 / 46 个接口**。启动后交互式文档在 **<http://127.0.0.1:8000/docs>**，
 不确定怎么调接口时直接在那儿点 "Try it out" 最省事。
 
 ### 6.1 AI 代码导师（学生端，`/api/v1/tutor`）
@@ -505,8 +511,21 @@ curl -X DELETE "http://127.0.0.1:8000/api/v1/library/file?path=python/homework1.
 | POST | `/api/v1/tutor/check` | 轻量 AI 检测（前端按钮用） |
 | POST | `/api/v1/tutor/comment` | 轻量 AI 注释生成 |
 | POST | `/api/v1/tutor/fix` | 轻量 AI 改错 |
+| POST | `/api/v1/tutor/diagnose` | **错题本 + 举一反三**：先查该学号的历史错题一起交给大模型，一次返回「诊断结论 + 新题目 + 知识点解析」；判定有错时归档进错题本 |
+| GET | `/api/v1/tutor/errors` | 某学号的错题本列表 + 易错知识点 Top N（需 `X-Student-Id` 头或 `student_id` 参数） |
+| DELETE | `/api/v1/tutor/errors/{id}` | 删除一条错题（**只能删自己的**：学号会作为过滤条件一起查） |
 | GET | `/api/v1/tutor/history` | 学习历史列表（`/history/{id}` 详情） |
 | DELETE | `/api/v1/tutor/history/{id}` | 删除一条历史记录 |
+
+另外提供一个**兼容别名** `POST /api/analyze`（注意：不在 `/api/v1` 前缀下）：
+按需求文档的 JSON 契约 `{ student_id, language, code_content }` 调用，
+内部直接转调 `/api/v1/tutor/diagnose`，因此错题本归档等行为与网页端完全一致。
+网页端不使用它（走表单更顺手），它是给脚本/Postman/第三方对接用的。
+
+错题本的数据落在 `student_error_logs` 表，建表 SQL 见
+[`docs/student_error_logs.sql`](docs/student_error_logs.sql)；
+完整的表设计 / 提示词实现 / 前端分栏 / **数据流图** 见
+[`docs/错题本与举一反三-设计与数据流.md`](docs/错题本与举一反三-设计与数据流.md)。
 
 ### 6.2 AI 自动检测（深度版）
 
@@ -666,6 +685,7 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 | `tools\verify_check.py` `[--ai]` | AI 检测：本地路径 9 项；加测真实模型 12 项 | ✓ |
 | `tools\verify_fix.py` `[--ai]` | 代码改错：本地路径 9 项；加测真实模型 12 项 | ✓ |
 | `tools\verify_comment.py` `[--ai]` | 注释生成：本地路径 6 项；加测真实模型 19 项 | ✓ |
+| `tools\verify_diagnose.py` `[--ai]` | 错题本 + 举一反三：接口与参数校验 14 项；加测真实模型约 30 项（含"历史错题是否真进了提示词"） | 14 项 ✓（未配 Key 的路径） |
 | `tools\verify_bat.py` | `start.bat` → 服务 → `stop.bat` 全流程 | 9 项 ✓ |
 | `tools\check_frontend.py` | JS 语法 / DOM id / CSS 类名 / **接口与方法**交叉检查 + 前端行为测试 | 全部通过 ✓ |
 | `tools\verify_ai_real.py` | 真实大模型验收（3 个示例作业 × 3 个功能） | 10 项 ✓ |
@@ -673,7 +693,7 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 | `tools\verify_model_switch.py` | 模型选择 + 网页填 Key 的完整链路（含 Key 无效与清除） | 18 项 ✓ |
 | `tools\audit_dead_code.py` | 死代码审计（只读）：没人引用的模块/函数/CSS 类名 + 多余产物 | 0 处 ✓ |
 | `tools\build_bat.py` | **生成** `start.bat` / `stop.bat`（改了脚本内容就跑它重新生成，GBK + CRLF） | — |
-| `tools\check_frontend_logic.mjs` | 前端行为测试本体（Node + DOM 桩，真跑 `app.js`）；由 `check_frontend.py` 第 5 步自动调用 | 135 项 ✓ |
+| `tools\check_frontend_logic.mjs` | 前端行为测试本体（Node + DOM 桩，真跑 `app.js`）；由 `check_frontend.py` 第 5 步自动调用 | 184 项 ✓ |
 
 这些脚本都不需要你手动先启动服务：除 `check_frontend.py`（静态 + Node 行为测试）之外，
 其余会自己拉起临时 uvicorn（独立端口 + 独立临时数据目录），跑完自己关掉，

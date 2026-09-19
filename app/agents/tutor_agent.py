@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,12 @@ from app.core.trace import trace_span
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "tutor/v1"
+
+# 「错题本 + 举一反三」诊断用的提示词版本，单独一个常量：
+# 它和上面三个功能的提示词是**各自独立演进**的（诊断要求输出
+# analysis + wrong_question_book 两段，结构完全不同），
+# 混用一个版本号会让 Trace 里的"这次用的是哪版提示词"失去意义。
+DIAGNOSE_PROMPT_VERSION = "tutor-diagnose/v1"
 
 # 各语言的展示名，用于拼接提示词
 _LANG_LABEL = {"python": "Python", "c": "C", "java": "Java",
@@ -132,6 +139,226 @@ FIX_SYSTEM = """你是一位编程老师，正在帮学生改正代码里的错�
 """
 
 
+# ===========================================================================
+# 四、错题本 + 举一反三（诊断）
+# ===========================================================================
+# 这是需求里**必须逐字使用**的 System Prompt。改动前请先确认需求文档，
+# 不要顺手"优化"措辞——提示词里的每一处强调（尤其 Output Format 与
+# Constraints 里的两次禁止 markdown 代码块）都是为了压住两类高频跑偏：
+#   1. 模型习惯性地在 JSON 外面裹 ```json 围栏或加一句"以下是结果："；
+#   2. 代码没出错时模型会偷懒不写 wrong_question_book。
+# 前者由 `extract_json_object` 兜底，后者由下面的 normalize 逻辑兜底。
+DIAGNOSE_SYSTEM = """# Role
+你是一个专业的 AI 代码导师与出题专家。你的核心任务是帮助学生分析代码错误，并结合学生的历史错题数据库，进行针对性的查漏补缺和举一反三。
+
+# Workflow
+1. 代码诊断：精准分析用户提交的代码，找出语法错误、逻辑漏洞或不良编程习惯。
+2. 知识点提取：将代码中的错误抽象为具体的编程知识点。
+3. 错题本分析：结合用户提供的【历史错题记录】，总结学生的薄弱环节和易错规律。
+4. 举一反三：根据当前的错误和历史的薄弱点，设计一道全新的编程练习题，并提供详细的知识点解析。
+
+# Output Format (CRITICAL)
+你必须严格输出合法的 JSON 格式，绝对不能包含 JSON 以外的任何文本（不要有 ```json 这样的 markdown 标记）。JSON 结构必须完全符合以下模板：
+
+{
+  "analysis": {
+    "status": "success" 或 "error",
+    "error_type": "语法错误" 或 "逻辑错误" 或 "无错误",
+    "message": "针对当前提交代码的具体分析诊断结果。",
+    "knowledge_points": ["本次错误涉及的知识点1", "知识点2"]
+  },
+  "wrong_question_book": {
+    "history_summary": "结合数据库中的历史错题记录，总结学生的错误频率和易错薄弱点。",
+    "new_exercise": {
+      "question_title": "针对薄弱点设计的新题目名称",
+      "question_description": "题目的详细描述，包含输入输出要求。",
+      "hint": "解题思路提示，不要直接给出完整答案。"
+    },
+    "knowledge_explanation": "对相关知识点（包含当前错误和历史薄弱点）的详细通俗解析，必须包含 Markdown 格式的代码示例。"
+  }
+}
+
+# Constraints
+1. 如果提交的代码完全正确（status为success），analysis部分的message需给予鼓励，knowledge_points可以留空或写"代码规范"。但 wrong_question_book 部分依然需要根据【历史错题记录】出题。如果历史错题记录为空，则随机出一个进阶题目。
+2. 如果提交的代码有错误（status为error），new_exercise 必须针对该错误知识点进行出题，不可偏离。
+3. knowledge_explanation 必须通俗易懂，使用 Markdown 语法来排版代码。
+4. 只能输出纯 JSON 字符串，禁止输出 markdown 的代码块标记（不要输出 ```json）。
+"""
+
+# 历史错题为空时，User Prompt 里放这句而不是留一片空白：
+# 空白会让模型以为"这一段忘了填"，从而自己编造几条历史错题（真的会）；
+# 写清楚"这是第一次提交"，它才会按 Constraint 1 随机出一道进阶题。
+_NO_HISTORY_HINT = "（该学生暂无历史错题记录，这是他的第一次提交，请按「随机出一个进阶题目」处理）"
+
+
+def format_error_history(records: Sequence[Any], *, limit: int | None = None) -> str:
+    """把错题记录列表拍成一段纯文本，喂给 User Prompt 的【历史错题记录】段。
+
+    为什么拍成文本而不是塞 JSON：模型对"编号列表 + 中文字段名"的遵循度
+    明显高于嵌套 JSON，而且我们只关心它总结规律，不需要它逐字段解析。
+    序号从 1 开始编号，模型在 history_summary 里可以引用"第 2 条"这类指代。
+
+    参数:
+        records: 错题记录（ORM 对象或任何带这些属性的对象皆可）。
+        limit:   最多输出几条；None 表示全部（调用方负责只查需要的条数）。
+
+    返回:
+        形如 "1. [2024-05-01] 语言：Python｜错误类型：逻辑错误｜知识点：循环边界\\n
+              当时的代码：...\\n AI 反馈：..." 的文本；没有记录时返回提示句。
+    """
+    items = list(records)[:limit] if limit is not None else list(records)
+    if not items:
+        return _NO_HISTORY_HINT
+
+    blocks: list[str] = []
+    for index, item in enumerate(items, start=1):
+        # 用 getattr 兜底：这些字段在 ORM 模型上一定有，但测试里常传
+        # SimpleNamespace / dict，少写一个 getattr 就会让整个诊断接口 500。
+        created = getattr(item, "created_at", None)
+        when = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else "时间未知"
+        language = str(getattr(item, "language", "") or "未知")
+        error_type = str(getattr(item, "error_type", "") or "未分类错误")
+        knowledge_point = str(getattr(item, "knowledge_point", "") or "未标注知识点")
+        code = str(getattr(item, "code_snippet", "") or "").strip()
+        feedback = str(getattr(item, "ai_feedback", "") or "").strip()
+
+        # 代码片段截断：一份作业几十上百行，5-10 条拼起来会挤爆上下文窗口，
+        # 而总结"易错规律"只需要看到出错的那几行。前后各留 600 字符。
+        if len(code) > 1200:
+            code = code[:600] + "\n…（中间内容略）…\n" + code[-600:]
+
+        blocks.append(
+            f"{index}. [{when}] 语言：{language}｜错误类型：{error_type}"
+            f"｜知识点：{knowledge_point}\n"
+            f"   当时的代码：\n{code or '（无代码片段）'}\n"
+            f"   AI 反馈：{feedback or '（无）'}"
+        )
+    return "\n\n".join(blocks)
+
+
+def build_diagnose_user_prompt(
+    *, language: str, code: str, history_errors_data: str
+) -> str:
+    """按需求给定的 User Prompt 模板拼接提示词。
+
+    单独抽成函数（而不是写在 `TutorAgent.diagnose` 里）有两个好处：
+      · 可以脱离大模型直接对拼接结果写断言，提示词是否退化一眼可见；
+      · 模板里的占位符只有这一处，改格式不用翻业务逻辑。
+    """
+    return (
+        "请根据以下信息，完成代码分析、错题本记录和举一反三出题任务。\n\n"
+        "【当前提交的代码】\n"
+        f"编程语言：{_lang_name(language)}\n"
+        f"代码内容：\n{code}\n\n"
+        "【学生历史错题记录】\n"
+        f"{history_errors_data}\n\n"
+        "【任务要求】\n"
+        "1. 严格按照 System Prompt 中定义的 JSON 格式输出。\n"
+        "2. 分析当前代码，给出诊断结果。\n"
+        "3. 结合历史错题记录，总结学生的薄弱点。\n"
+        "4. 针对薄弱点或当前错误，设计一道新题目，并给出知识点解析。\n"
+        "5. 再次强调：只输出纯 JSON 字符串，不要输出任何多余的文本或 markdown 标记！\n"
+    )
+
+
+# status 字段的同义词收敛表。模型时不时会回 "OK" / "通过" / "correct"，
+# 直接把原始值透给前端会让"是否记入错题本"的判断失效。
+_SUCCESS_STATUS_TOKENS = {
+    "success",
+    "ok",
+    "pass",
+    "passed",
+    "correct",
+    "true",
+    "no_error",
+    "无错误",
+    "通过",
+    "正确",
+    "没有问题",
+}
+
+
+def normalize_diagnose_status(raw: Any) -> str:
+    """把模型给的 status 收敛成 "success" 或 "error"。
+
+    收敛不了时**一律按 "error" 处理**。这是一处刻意的偏向：把没出错的代码
+    误记成错题，学生顶多多做一道题；反过来把真错题漏掉，错题本就失去了意义。
+    真正"完全没解析出 JSON"的情况在更上层用 `TutorResult.parsed` 拦掉，
+    不会走到这里。
+    """
+    text = str(raw or "").strip().lower()
+    if text in _SUCCESS_STATUS_TOKENS or text.startswith("success"):
+        return "success"
+    return "error"
+
+
+def _clean_knowledge_points(raw: Any) -> list[str]:
+    """知识点列表：去空、去重、保序（顺序本身是模型给出的重要性排序）。"""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            cleaned.append(text)
+    return cleaned
+
+
+def _as_text(raw: Any) -> str:
+    """把任意值转成展示用文本；None 转空串，避免前端渲染出 "None"。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    return str(raw).strip()
+
+
+def normalize_diagnose_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """把模型返回的 JSON 收敛成前端契约的形状（缺字段补默认值）。
+
+    为什么必须归一化：提示词里写死了结构，但模型仍会小概率漏字段
+    （尤其是代码没问题时偷懒省略 new_exercise）。与其让前端到处写
+    `data.wrong_question_book?.new_exercise?.hint || ''`，不如在后端
+    一次性补齐——前端只处理"有值但内容为空"这一种情况。
+    """
+    analysis_raw = payload.get("analysis")
+    analysis_raw = analysis_raw if isinstance(analysis_raw, dict) else {}
+    status = normalize_diagnose_status(analysis_raw.get("status"))
+    knowledge_points = _clean_knowledge_points(analysis_raw.get("knowledge_points"))
+
+    error_type = _as_text(analysis_raw.get("error_type"))
+    if not error_type:
+        error_type = "无错误" if status == "success" else "未分类错误"
+
+    book_raw = payload.get("wrong_question_book")
+    book_raw = book_raw if isinstance(book_raw, dict) else {}
+    exercise_raw = book_raw.get("new_exercise")
+    exercise_raw = exercise_raw if isinstance(exercise_raw, dict) else {}
+
+    return {
+        "analysis": {
+            "status": status,
+            "error_type": error_type,
+            "message": _as_text(analysis_raw.get("message")),
+            "knowledge_points": knowledge_points,
+        },
+        "wrong_question_book": {
+            "history_summary": _as_text(book_raw.get("history_summary")),
+            "new_exercise": {
+                "question_title": _as_text(exercise_raw.get("question_title")),
+                "question_description": _as_text(exercise_raw.get("question_description")),
+                "hint": _as_text(exercise_raw.get("hint")),
+            },
+            "knowledge_explanation": _as_text(book_raw.get("knowledge_explanation")),
+        },
+    }
+
+
+
 @dataclass(slots=True)
 class TutorResult:
     """三个功能共用的返回结构。"""
@@ -141,6 +368,12 @@ class TutorResult:
     usage: LLMUsage = field(default_factory=LLMUsage)
     duration_ms: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    # 模型输出是否真的解析成了 JSON 对象。
+    # 为什么需要这个标志：`payload` 解析失败时是空字典 `{}`，而空字典
+    # 与"模型返回了合法 JSON 但字段缺失"在调用方看来是一样的。诊断接口
+    # 要靠它区分"代码没问题"和"AI 跑偏了"——前者可以正常出题，
+    # 后者应该让学生重试，绝不能把一次解析失败当成"无错误"记进错题本。
+    parsed: bool = False
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -167,13 +400,15 @@ class TutorAgent:
         return self._llm
 
     # -- 共用调用 ---------------------------------------------------------
-    async def _ask(self, system: str, user: str, *, kind: str) -> TutorResult:
+    async def _ask(
+        self, system: str, user: str, *, kind: str, prompt_version: str = PROMPT_VERSION
+    ) -> TutorResult:
         """发起一次调用并解析 JSON，带 Trace 记录。"""
         started = time.perf_counter()
         with trace_span(
             "agent.tutor",
             kind="agent",
-            payload={"kind": kind, "prompt_version": PROMPT_VERSION, "code_chars": len(user)},
+            payload={"kind": kind, "prompt_version": prompt_version, "code_chars": len(user)},
             metadata={"model": self._llm.model},
         ) as span:
             from app.core.llm_client import LLMMessage
@@ -201,6 +436,7 @@ class TutorAgent:
                 usage=response.usage,
                 duration_ms=duration,
                 warnings=warnings,
+                parsed=bool(payload),
             )
 
     # -- 1. 检测 ----------------------------------------------------------
@@ -281,5 +517,56 @@ class TutorAgent:
         payload.setdefault("summary", "")
         return result
 
+    # -- 4. 错题本 + 举一反三（诊断）---------------------------------------
+    async def diagnose(
+        self, code: str, *, filename: str, language: str, history_text: str = ""
+    ) -> TutorResult:
+        """一次调用同时产出「诊断结论」与「新题目 + 知识点解析」。
 
-__all__ = ["PROMPT_VERSION", "TutorAgent", "TutorResult", "extract_json_object"]
+        参数:
+            code:         学生本次提交的代码。
+            filename:     文件名，仅用于提示词里给学生一点上下文。
+            language:     语言标识（python / c / java …）。
+            history_text: **已格式化好**的历史错题文本，见 `format_error_history`。
+                          传空串表示该学生没有历史错题，模型会按提示词
+                          Constraint 1 随机出一道进阶题。
+
+        返回:
+            `TutorResult`，其 `payload` 已归一化为
+            `{"analysis": {...}, "wrong_question_book": {...}}`；
+            `parsed=False` 表示模型压根没返回 JSON（调用方应让用户重试，
+            而不能把这当成"代码没错误"）。
+        """
+        user = build_diagnose_user_prompt(
+            language=language,
+            code=code,
+            history_errors_data=history_text or _NO_HISTORY_HINT,
+        )
+        result = await self._ask(
+            DIAGNOSE_SYSTEM, user, kind="diagnose", prompt_version=DIAGNOSE_PROMPT_VERSION
+        )
+        if not result.parsed:
+            # 没解析出 JSON 就原样返回，不要归一化出一个假的"无错误"结论
+            return result
+
+        result.payload = normalize_diagnose_payload(result.payload)
+        # 提示词要求 knowledge_explanation 必须含 Markdown 代码示例。
+        # 模型偶尔会忘记，这里只记一条 warning 供前端提示，**不替它编内容**。
+        explanation = result.payload["wrong_question_book"]["knowledge_explanation"]
+        if "```" not in explanation:
+            result.warnings.append("AI 返回的知识点解析里没有 Markdown 代码示例")
+        return result
+
+
+__all__ = [
+    "DIAGNOSE_PROMPT_VERSION",
+    "DIAGNOSE_SYSTEM",
+    "PROMPT_VERSION",
+    "TutorAgent",
+    "TutorResult",
+    "build_diagnose_user_prompt",
+    "extract_json_object",
+    "format_error_history",
+    "normalize_diagnose_payload",
+    "normalize_diagnose_status",
+]

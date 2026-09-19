@@ -10,6 +10,7 @@
      3.5 代码在线编辑         —— 编辑 / 保存 / 取消、行号、快捷键
      4. 上传与分析            —— 语言识别 + 结构解析
      5. 三个 AI 功能          —— 检测 / 注释 / 改错
+     5.4 错题本 + 举一反三    —— 学号、Markdown 渲染、诊断、错题本面板
      6. 本地项目库            —— 扫描、浏览、编辑保存、替换、删除
      7. 历史记录
      8~10. 面板拖动、窄屏适配、三个拖拽区（需求二 / 需求三）
@@ -22,6 +23,9 @@
       POST /check                AI 检测
       POST /comment              AI 生成注释
       POST /fix                  AI 自动改错
+      POST /diagnose             AI 诊断（错题本 + 举一反三）★ 新增
+      GET  /errors               错题本列表 + 易错知识点聚合           ★ 新增
+      DELETE /errors/{id}        删除一条错题                          ★ 新增
       GET  /history              历史记录列表
       GET  /history/{id}         历史记录详情
       DELETE /history/{id}       删除记录
@@ -74,6 +78,19 @@ const FILES_BASE = '/api/v1/files';
 const MODELS_BASE = '/api/v1/models';
 const AUTH_BASE = '/api/v1/auth';
 
+/**
+ * 学号在 localStorage 里的键名。
+ * 与 API Key / 会话号刻意不同（那两个只放内存）：学号不是凭据，
+ * 而且必须跨刷新保留——否则学生每次刷新都要重填，错题本会"断档"。
+ */
+const STUDENT_STORAGE_KEY = 'ai-tutor.studentId';
+
+/**
+ * 学生身份的请求头名，必须与后端的 STUDENT_HEADER 一致
+ * （见 app/api/v1/endpoints/tutor.py）。
+ */
+const STUDENT_HEADER = 'X-Student-Id';
+
 /** 全局状态：当前正在处理的代码，以及各个接口返回的结果 */
 const state = {
   // ---- 代码是否已载入：占位提示与三个 AI 按钮的显隐都由它决定（见 setHasCode）----
@@ -111,6 +128,14 @@ const state = {
   modelTtlMinutes: 30,    // 后端给的 Key 有效期（分钟），提示语里用得到
   // 面板尺寸（需求三）：被用户拖过之后记在这里，并写入 localStorage
   layout: {},
+
+  // ---- 错题本 & 举一反三 ----
+  // 学号：错题本按学号归档。与 API Key / 会话号不同，它**会**写进 localStorage——
+  // 学号不是凭据（泄露了也不能拿去调模型），而且必须跨刷新保留，
+  // 否则学生每次刷新页面都会被要求重填，错题本也就"断"了。
+  studentId: '',
+  diagnoseResult: null,  // 最近一次 /diagnose 的返回，用于上半屏渲染
+  errorBook: null,       // 最近一次 /errors 的返回（列表 + 易错知识点）
 };
 
 /** 常用的 DOM 元素引用，统一取一次，避免到处 querySelector */
@@ -139,6 +164,12 @@ const el = {
   structureList: document.getElementById('structureList'),
   historyList: document.getElementById('historyList'),
   refreshHistory: document.getElementById('refreshHistory'),
+
+  // 学号（错题本按学号归档）
+  studentCard: document.getElementById('studentCard'),
+  studentId: document.getElementById('studentId'),
+  studentBadge: document.getElementById('studentBadge'),
+  studentHint: document.getElementById('studentHint'),
 
   // 本地项目库
   libraryHint: document.getElementById('libraryHint'),
@@ -181,12 +212,16 @@ const el = {
   confirmOkBtn: document.getElementById('confirmOkBtn'),
   confirmCancelBtn: document.getElementById('confirmCancelBtn'),
 
-  // 面板拖动（需求三）：三根分隔条 + 需要测量尺寸的几个容器
+  // 面板拖动（需求三）：四根分隔条 + 需要测量尺寸的几个容器
   resizerLeft: document.getElementById('resizerLeft'),
   resizerRight: document.getElementById('resizerRight'),
   resizerCode: document.getElementById('resizerCode'),
+  // 右侧面板「分析结果 ｜ 错题本」之间的水平分隔条
+  resizerResultSplit: document.getElementById('resizerResultSplit'),
   sidebar: document.querySelector('.sidebar'),
-  resultPane: document.querySelector('.pane:last-of-type'),
+  // 右侧结果区：用 id 取，比 `.pane:last-of-type` 这种位置选择器更抗改版
+  resultPane: document.getElementById('resultPane'),
+  analysisCard: document.getElementById('analysisCard'),
   codeCard: document.getElementById('codeCard'),
   codeActions: document.getElementById('codeActions'),
 
@@ -194,13 +229,16 @@ const el = {
   btnCheck: document.getElementById('btnCheck'),
   btnComment: document.getElementById('btnComment'),
   btnFix: document.getElementById('btnFix'),
+  btnDiagnose: document.getElementById('btnDiagnose'),
   actionHint: document.getElementById('actionHint'),
 
-  // 结果区
+  // 结果区（上半屏）
   resultEmpty: document.getElementById('resultEmpty'),
   resultCheck: document.getElementById('resultCheck'),
   resultComment: document.getElementById('resultComment'),
   resultFix: document.getElementById('resultFix'),
+  resultDiagnose: document.getElementById('resultDiagnose'),
+  analysisBadge: document.getElementById('analysisBadge'),
 
   scoreCircle: document.getElementById('scoreCircle'),
   scoreValue: document.getElementById('scoreValue'),
@@ -218,6 +256,33 @@ const el = {
   fixBody: document.getElementById('fixBody'),
   changeList: document.getElementById('changeList'),
   fixCode: document.getElementById('fixCode'),
+
+  // 诊断结论（上半屏里属于 /diagnose 的那一块）
+  diagnoseStatus: document.getElementById('diagnoseStatus'),
+  diagnoseType: document.getElementById('diagnoseType'),
+  diagnoseMessage: document.getElementById('diagnoseMessage'),
+  diagnoseKpBox: document.getElementById('diagnoseKpBox'),
+  diagnoseKpList: document.getElementById('diagnoseKpList'),
+  diagnoseLogged: document.getElementById('diagnoseLogged'),
+
+  // 错题本（下半屏）
+  wrongBookCard: document.getElementById('wrongBookCard'),
+  wrongBookCount: document.getElementById('wrongBookCount'),
+  refreshWrongBook: document.getElementById('refreshWrongBook'),
+  wrongBookEmpty: document.getElementById('wrongBookEmpty'),
+  wrongBookBody: document.getElementById('wrongBookBody'),
+  weakPointBox: document.getElementById('weakPointBox'),
+  weakPointList: document.getElementById('weakPointList'),
+  historySummaryBox: document.getElementById('historySummaryBox'),
+  historySummary: document.getElementById('historySummary'),
+  exerciseBox: document.getElementById('exerciseBox'),
+  exerciseTitle: document.getElementById('exerciseTitle'),
+  exerciseDesc: document.getElementById('exerciseDesc'),
+  exerciseHint: document.getElementById('exerciseHint'),
+  explanationBox: document.getElementById('explanationBox'),
+  knowledgeExplanation: document.getElementById('knowledgeExplanation'),
+  errorListBox: document.getElementById('errorListBox'),
+  errorLogList: document.getElementById('errorLogList'),
 
   toast: document.getElementById('toast'),
 };
@@ -245,9 +310,12 @@ function toast(message, kind = 'info') {
  * 调用后端接口的统一入口。
  * 负责：拼地址、发请求、解析 JSON、把后端的错误提示转成中文抛出。
  *
- * 顺手做一件事：只要页面上已经拿到会话号（用户填过 Key），
- * 就自动带上 `X-Session-Id` 请求头——这样后面所有 AI 调用都会用
- * "用户选的那个模型 + 用户自己那把 Key"，不需要每个调用点各写一遍。
+ * 顺手做两件事：
+ *   1. 只要页面上已经拿到会话号（用户填过 Key），
+ *      就自动带上 `X-Session-Id` 请求头——这样后面所有 AI 调用都会用
+ *      "用户选的那个模型 + 用户自己那把 Key"，不需要每个调用点各写一遍。
+ *   2. 填过学号就带上 `X-Student-Id` 请求头——错题本的读写全靠它，
+ *      同样不该在每个调用点各写一遍（漏一个就会出现"读了别人的错题本"）。
  *
  * @param {string} path   接口路径，例如 '/check'
  * @param {object} options fetch 的选项；body 可直接传普通对象
@@ -261,6 +329,8 @@ async function api(path, options = {}, base = API_BASE) {
   // 它等价于"临时凭据"，泄露出去别人就能用你的 Key 调模型。
   const headers = { ...(options.headers || {}) };
   if (state.sessionId) headers['X-Session-Id'] = state.sessionId;
+  // 学号可以放心放 localStorage（不是凭据），但同样通过请求头统一带上
+  if (state.studentId) headers[STUDENT_HEADER] = state.studentId;
 
   const response = await fetch(url, { ...options, headers });
 
@@ -421,7 +491,7 @@ function renderAiBadge() {
 /**
  * 按钮进入/退出「处理中」状态的统一封装。
  *
- * 三个 AI 按钮可点的条件是**同时**满足：
+ * 四个 AI 按钮可点的条件是**同时**满足：
  *   1. 当前不在处理中（避免连点导致重复计费）
  *   2. AI 可用——后端配了 Key，或用户在页面上填了自己的 Key（见 aiReady）
  *   3. 当前**有代码**——没代码时点了只会拿到"代码内容为空"的报错，
@@ -429,12 +499,17 @@ function renderAiBadge() {
  *
  * 把三条判断收在这一个函数里，调用点就不必各写一遍，
  * 也不会出现"AI 可用但还没代码，按钮却是亮的"这种状态不一致。
+ *
+ * 注意「诊断 + 举一反三」**不**把"有没有学号"算进可点条件：
+ * 没填学号时点一下会收到一句明确的提示并聚焦到学号输入框，
+ * 比一个灰着不动的按钮更好懂（学生看得到"为什么不能点"）。
  */
 function setBusy(busy, hintText = '') {
   const clickable = !busy && aiReady() && state.hasCode;
   el.btnCheck.disabled = !clickable;
   el.btnComment.disabled = !clickable;
   el.btnFix.disabled = !clickable;
+  el.btnDiagnose.disabled = !clickable;
   el.actionHint.textContent = hintText;
 }
 
@@ -1416,12 +1491,32 @@ async function loadCode(filename, code, options = {}) {
    5. 三个 AI 功能
    ========================================================================== */
 
-/** 切换结果区显示哪一块 */
+/** 上半屏各结果块对应的标题徽章文案 */
+const ANALYSIS_LABEL = {
+  check: 'AI 检测',
+  comment: 'AI 注释',
+  fix: 'AI 改错',
+  diagnose: 'AI 诊断',
+};
+
+/**
+ * 切换上半屏显示哪一块结果。
+ *
+ * @param {string} which 'check' | 'comment' | 'fix' | 'diagnose'
+ */
 function showResult(which) {
   el.resultEmpty.hidden = true;
   el.resultCheck.hidden = which !== 'check';
   el.resultComment.hidden = which !== 'comment';
   el.resultFix.hidden = which !== 'fix';
+  el.resultDiagnose.hidden = which !== 'diagnose';
+
+  // 标题右上角标出"我现在看的是哪一次操作的结果"。
+  // 上半屏的内容会被下一个按钮整块替换，没有这个徽章学生很容易
+  // 把上一次的检测结果当成这次诊断的结论。
+  const label = ANALYSIS_LABEL[which];
+  el.analysisBadge.textContent = label || '';
+  el.analysisBadge.hidden = !label;
 }
 
 /** ---- 5.1 AI 检测 ---- */
@@ -1563,6 +1658,460 @@ async function runFix() {
     setBusy(false);
     await loadHistory();
   }
+}
+
+/* ==========================================================================
+   5.4 错题本 + 举一反三（下半屏）
+   --------------------------------------------------------------------------
+   这一块与上面三个 AI 功能的关键区别：**它是有状态的**。
+   上面三个按钮每次都是"就这份代码给个结论"，而这里要：
+     1. 先把学号对应的历史错题捞出来，一起发给模型（在后端做）；
+     2. 把模型给的新题目、知识点解析渲染到下半屏；
+     3. 把该学号的错题明细一直挂在下半屏，跨次累积。
+
+   因此页面加载时就要读一次错题本（loadErrorBook），
+   而不是"等学生点了诊断才有内容"——那样学生每次刷新都会以为错题丢了。
+   ========================================================================== */
+
+/** 读出上次保存的学号（localStorage 不可用时就当没填过） */
+function loadSavedStudentId() {
+  try {
+    return localStorage.getItem(STUDENT_STORAGE_KEY) || '';
+  } catch (err) {
+    console.warn('读取学号失败（可能是隐私模式）：', err);
+    return '';
+  }
+}
+
+/** 保存学号（失败不影响使用，只是下次要重填） */
+function saveStudentId(value) {
+  try {
+    if (value) localStorage.setItem(STUDENT_STORAGE_KEY, value);
+    else localStorage.removeItem(STUDENT_STORAGE_KEY);
+  } catch (err) {
+    console.warn('保存学号失败：', err);
+  }
+}
+
+/** 当前学号（去掉首尾空格） */
+function currentStudentId() {
+  return String(state.studentId || '').trim();
+}
+
+/**
+ * 刷新学号相关的界面：徽章、提示语。
+ */
+function renderStudentBadge() {
+  const sid = currentStudentId();
+  if (sid) {
+    el.studentBadge.textContent = '已填写';
+    el.studentBadge.className = 'badge badge--ok';
+    el.studentHint.textContent = `错题本会归档到学号 ${sid}`;
+  } else {
+    el.studentBadge.textContent = '未填写';
+    el.studentBadge.className = 'badge badge--muted';
+    el.studentHint.textContent =
+      '填好学号，AI 才能结合你以前的错题出题。学号只保存在本机浏览器里。';
+  }
+}
+
+/**
+ * 没填学号时的统一处理：给出明确提示并聚焦输入框。
+ *
+ * 为什么不改成"禁用按钮"：灰按钮不会告诉学生**为什么**点不了。
+ * 让他点一下、收到一句"请先填学号"、光标自动跳到输入框，一次就懂了。
+ *
+ * @returns {boolean} 学号是否已填写
+ */
+function requireStudentId() {
+  if (currentStudentId()) return true;
+  toast('请先在左侧「我的学号」里填写学号：错题本需要按学号归档', 'error');
+  el.studentId.focus();
+  return false;
+}
+
+/* ---------- 5.4.1 Markdown 渲染 ---------- */
+
+/**
+ * 把 Markdown 文本渲染进一个容器（知识点解析用）。
+ *
+ * 三步，缺一不可：
+ *   1. marked 把 Markdown 转成 HTML；
+ *   2. **DOMPurify 消毒**——这段 HTML 来自大模型，而模型的输入里含着
+ *      学生粘贴的代码，恶意代码可以借此注入 <script> 或 onerror，
+ *      在学生浏览器里执行。直接 innerHTML 是 XSS。
+ *   3. highlight.js 给代码块上色，与页面其它代码区保持一致的观感。
+ *
+ * 任何一个库没加载出来时降级为"转义后的纯文本"，
+ * 而不是白屏或直接把未消毒的 HTML 塞进 DOM。
+ *
+ * @param {HTMLElement} target 容器
+ * @param {string} text       Markdown 源文本
+ */
+function renderMarkdown(target, text) {
+  const source = String(text || '').trim();
+  if (!source) {
+    target.innerHTML = '<p>（AI 没有返回解析内容）</p>';
+    return;
+  }
+
+  // ---- 降级：库没加载出来（vendor 文件缺失、断网、被拦截）----
+  // 条件里连 .parse / .sanitize 一起判：只要有一个不可用就整体降级，
+  // 免得走到一半才在 sanitize 上抛 TypeError，把整块渲染搞成空白。
+  const hasMarked =
+    typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function';
+  const hasPurify =
+    typeof window.DOMPurify !== 'undefined' && typeof window.DOMPurify.sanitize === 'function';
+  if (!hasMarked || !hasPurify) {
+    target.innerHTML =
+      '<pre class="issue__suggestion">' + escapeHtml(source) + '</pre>';
+    return;
+  }
+
+  let html;
+  try {
+    html = window.marked.parse(source, { gfm: true, breaks: true });
+  } catch (err) {
+    console.warn('Markdown 解析失败，退回纯文本：', err);
+    target.innerHTML =
+      '<pre class="issue__suggestion">' + escapeHtml(source) + '</pre>';
+    return;
+  }
+
+  // 消毒是**必须**的，不是可选项：见上面第 2 步的说明
+  target.innerHTML = window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+
+  // 代码高亮失败不影响阅读，所以单独 try 一下，别让整块渲染挂掉
+  target.querySelectorAll('pre code').forEach((block) => {
+    try {
+      window.hljs.highlightElement(block);
+    } catch (err) {
+      console.warn('代码高亮失败：', err);
+    }
+  });
+}
+
+/* ---------- 5.4.2 诊断（第 4 个按钮） ---------- */
+
+/** 渲染上半屏的「诊断结论」 */
+function renderDiagnose(data) {
+  const analysis = data.analysis || {};
+  const passed = analysis.status === 'success';
+
+  el.diagnoseStatus.textContent = passed ? '✅ 通过' : '❌ 发现问题';
+  el.diagnoseStatus.className = 'verdict__badge' + (passed ? '' : ' is-error');
+  el.diagnoseType.textContent = analysis.error_type || '';
+  el.diagnoseMessage.textContent = analysis.message || '（AI 没有给出说明）';
+
+  // 知识点标签
+  const points = analysis.knowledge_points || [];
+  if (points.length) {
+    el.diagnoseKpList.innerHTML = points
+      .map((point) => `<span class="chip chip--static">${escapeHtml(point)}</span>`)
+      .join('');
+    el.diagnoseKpBox.hidden = false;
+  } else {
+    el.diagnoseKpList.innerHTML = '';
+    el.diagnoseKpBox.hidden = true;
+  }
+
+  // 归档结果：明确告诉学生"这次错误记下来了没有"。
+  // 悄悄写库是不行的——学生看到"已记入错题本"才会理解下半屏为什么变了。
+  if (data.logged) {
+    el.diagnoseLogged.textContent =
+      `📕 这次错误已记入错题本（错题本共 ${data.history_total} 条），下次诊断会一起参考。`;
+    el.diagnoseLogged.hidden = false;
+  } else if (passed) {
+    el.diagnoseLogged.textContent = '🎉 这次没有发现错误，因此没有记入错题本。';
+    el.diagnoseLogged.hidden = false;
+  } else {
+    // 有错但没写进去（数据库异常）——如实说明，不要假装成功了
+    el.diagnoseLogged.textContent = '⚠️ 这次诊断发现了问题，但写入错题本失败（不影响本次结果）。';
+    el.diagnoseLogged.className = 'callout';
+    el.diagnoseLogged.hidden = false;
+    return;
+  }
+  el.diagnoseLogged.className = 'callout callout--ok';
+}
+
+/** 渲染下半屏的错题本内容（历史总结 / 新题目 / 知识点解析） */
+function renderWrongBook(book, meta) {
+  el.wrongBookEmpty.hidden = true;
+  el.wrongBookBody.hidden = false;
+
+  // 历史错题总结
+  if (book.history_summary) {
+    el.historySummary.textContent = book.history_summary;
+    el.historySummaryBox.hidden = false;
+  } else {
+    el.historySummaryBox.hidden = true;
+  }
+
+  // 举一反三：新题目
+  const exercise = book.new_exercise || {};
+  if (exercise.question_title || exercise.question_description) {
+    el.exerciseTitle.textContent = exercise.question_title || '（未命名题目）';
+    el.exerciseDesc.textContent = exercise.question_description || '';
+    el.exerciseHint.textContent = exercise.hint || '（AI 没有给出提示）';
+    el.exerciseBox.hidden = false;
+    // 每次出新题都把提示折回去：学生应该先自己想，而不是直接看答案。
+    // 这里不直接用 querySelector('details').open，是因为一旦以后调整了
+    // 题目的 DOM 结构（比如把 details 换成按钮），这行就会抛 TypeError，
+    // 连带把整块错题本渲染搞挂——一个样式改动不该有这种杀伤力。
+    const hintBox = el.exerciseBox.querySelector('details');
+    if (hintBox) hintBox.open = false;
+  } else {
+    el.exerciseBox.hidden = true;
+  }
+
+  // 知识点解析（Markdown）
+  if (book.knowledge_explanation) {
+    renderMarkdown(el.knowledgeExplanation, book.knowledge_explanation);
+    el.explanationBox.hidden = false;
+  } else {
+    el.explanationBox.hidden = true;
+  }
+
+  // "本次参考了几条历史错题"——让学生看得出 AI 真的读过他的错题本
+  if (meta) {
+    el.wrongBookCount.textContent = `错题本 ${meta.history_total} 条`;
+    el.studentHint.textContent =
+      `本次参考了 ${meta.history_count} 条历史错题，错题本共 ${meta.history_total} 条`;
+  }
+}
+
+/**
+ * 点「🎯 诊断 + 举一反三」：一次调用同时填满上下两半屏。
+ *
+ * 流程与后端 /diagnose 一一对应：
+ *   提交代码（学号走请求头）→ 上半屏渲染 analysis → 下半屏渲染错题本内容
+ *   → 重新拉一次错题本列表（把刚记进去的那条显示出来）。
+ */
+async function runDiagnose() {
+  // 没学号就当场说清楚，并且**不要**发请求（后端会 400，但本地提示更快更具体）
+  if (!requireStudentId()) {
+    showResult('diagnose');
+    el.diagnoseStatus.textContent = '需要先填学号';
+    el.diagnoseStatus.className = 'verdict__badge is-error';
+    el.diagnoseType.textContent = '';
+    el.diagnoseMessage.textContent =
+      '错题本按学号归档：请在左侧第一张卡片「我的学号」里填写后再点一次。';
+    el.diagnoseKpBox.hidden = true;
+    el.diagnoseLogged.hidden = true;
+    return;
+  }
+
+  setBusy(true, 'AI 正在结合你的错题本诊断…');
+  showResult('diagnose');
+  el.diagnoseStatus.textContent = '诊断中…';
+  el.diagnoseStatus.className = 'verdict__badge';
+  el.diagnoseType.textContent = '';
+  el.diagnoseMessage.textContent = '正在读取你的历史错题并分析这段代码…';
+  el.diagnoseKpBox.hidden = true;
+  el.diagnoseLogged.hidden = true;
+
+  try {
+    const data = await api('/diagnose', { method: 'POST', body: codeFormData() });
+    state.diagnoseResult = data;
+
+    renderDiagnose(data);
+    renderWrongBook(data.wrong_question_book || {}, data);
+
+    // 下半屏的「历史错题明细」要包含刚记进去的这一条，所以重新拉一次
+    await loadErrorBook();
+
+    const passed = (data.analysis || {}).status === 'success';
+    toast(passed ? '诊断完成：这次没有发现错误 🎉' : '诊断完成：已记入错题本，看看新题目吧', 'ok');
+  } catch (err) {
+    handleAiError(err);
+    el.diagnoseStatus.textContent = '诊断失败';
+    el.diagnoseStatus.className = 'verdict__badge is-error';
+    el.diagnoseType.textContent = '';
+    el.diagnoseMessage.textContent = err.message;
+  } finally {
+    setBusy(false);
+    await loadHistory();
+  }
+}
+
+/* ---------- 5.4.3 错题本列表 ---------- */
+
+/** 把错题本下半屏恢复成"空"的样子（换学号时用） */
+function resetWrongBook() {
+  state.errorBook = null;
+  el.wrongBookBody.hidden = true;
+  el.wrongBookEmpty.hidden = false;
+  el.weakPointBox.hidden = true;
+  el.weakPointList.innerHTML = '';
+  el.historySummaryBox.hidden = true;
+  el.exerciseBox.hidden = true;
+  el.explanationBox.hidden = true;
+  el.errorListBox.hidden = true;
+  el.errorLogList.innerHTML = '';
+  el.wrongBookCount.textContent = '未归档';
+}
+
+/** 显示错题本的空状态（带自定义说明） */
+function renderWrongBookEmpty(message) {
+  el.wrongBookBody.hidden = true;
+  el.wrongBookEmpty.hidden = false;
+  el.wrongBookEmpty.innerHTML =
+    `<p>${escapeHtml(message)}</p>` +
+    '<p class="empty__hint">填好学号后，点上面的「🎯 诊断 + 举一反三」</p>';
+}
+
+/** 渲染易错知识点：条形长度 = 该知识点次数 / 最高次数 */
+function renderWeakPoints(points) {
+  if (!points || !points.length) {
+    el.weakPointBox.hidden = true;
+    el.weakPointList.innerHTML = '';
+    return;
+  }
+
+  const max = Math.max(...points.map((item) => item.count)) || 1;
+  el.weakPointList.innerHTML = points.map((item) => {
+    const percent = Math.round((item.count / max) * 100);
+    return `
+      <li class="weak__item">
+        <div class="weak__head">
+          <span>${escapeHtml(item.knowledge_point)}</span>
+          <span class="weak__count">${item.count} 次</span>
+        </div>
+        <div class="weak__bar"><span style="width:${percent}%"></span></div>
+      </li>`;
+  }).join('');
+  el.weakPointBox.hidden = false;
+}
+
+/** 渲染历史错题明细（每条带一个删除按钮） */
+function renderErrorLogList(items) {
+  if (!items || !items.length) {
+    el.errorListBox.hidden = true;
+    el.errorLogList.innerHTML = '';
+    return;
+  }
+
+  el.errorLogList.innerHTML = items.map((item) => {
+    const time = new Date(item.created_at).toLocaleString('zh-CN', {
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+    return `
+      <li class="errorlog__item">
+        <div class="errorlog__head">
+          <span class="errorlog__kp">${escapeHtml(item.knowledge_point)}</span>
+          <span class="errorlog__meta">${escapeHtml(item.error_type)} · ${time}</span>
+        </div>
+        <p class="errorlog__feedback">${nl2br(item.ai_feedback)}</p>
+        <div class="errorlog__actions">
+          <button class="btn btn--mini" data-error-id="${item.id}"
+                  title="把这条错题从错题本里删掉">删除</button>
+        </div>
+      </li>`;
+  }).join('');
+  el.errorListBox.hidden = false;
+}
+
+/**
+ * 读取当前学号的错题本并渲染下半屏的统计与明细。
+ *
+ * 页面加载时也会调用一次：这样刷新页面后学生照样能看到自己的错题本，
+ * 而不是一片空白（错题本是长期资产，不该只在点按钮后才出现）。
+ */
+async function loadErrorBook() {
+  const sid = currentStudentId();
+  if (!sid) {
+    resetWrongBook();
+    renderWrongBookEmpty('填好学号后，这里会显示你的错题本');
+    return;
+  }
+
+  try {
+    const data = await api('/errors?limit=20');
+    state.errorBook = data;
+
+    renderWeakPoints(data.weak_points || []);
+    renderErrorLogList(data.items || []);
+    el.wrongBookCount.textContent = `错题本 ${data.total} 条`;
+
+    if (!data.total) {
+      // 一条错题都没有：显示空状态，同时把上半屏的诊断内容保留着
+      renderWrongBookEmpty('这个学号还没有错题记录，做一次「诊断 + 举一反三」试试');
+      return;
+    }
+
+    // 有错题：把明细露出来（下半屏可能还停在空状态，例如刚刷新页面）
+    el.wrongBookEmpty.hidden = true;
+    el.wrongBookBody.hidden = false;
+  } catch (err) {
+    // 读失败不影响上半屏的诊断结果，只在下半屏说明原因
+    el.wrongBookEmpty.hidden = false;
+    el.wrongBookEmpty.innerHTML =
+      `<p>读取错题本失败：${escapeHtml(err.message)}</p>`;
+    el.wrongBookCount.textContent = '读取失败';
+  }
+}
+
+/** 删除一条错题（二次确认 + 按学号鉴权在后端做） */
+async function deleteErrorLog(errorId, label) {
+  const ok = await showConfirm({
+    title: '删除这条错题？',
+    text: `将从你的错题本里删除「${escapeHtml(label || '这条错题')}」。<br>` +
+          '删除后 AI 就不会再参考它了（历史记录不受影响）。',
+    okText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+
+  try {
+    await api(`/errors/${errorId}`, { method: 'DELETE' });
+    toast('已从错题本删除', 'ok');
+    await loadErrorBook();
+  } catch (err) {
+    toast('删除失败：' + err.message, 'error');
+  }
+}
+
+/** 绑定左侧「我的学号」卡片 */
+function bindStudentCard() {
+  const saved = loadSavedStudentId();
+  if (saved) {
+    state.studentId = saved;
+    el.studentId.value = saved;
+  }
+  renderStudentBadge();
+
+  /** 提交学号变更：保存 + 重新读错题本 */
+  const commit = async () => {
+    const value = el.studentId.value.trim().slice(0, 64);
+    if (value === currentStudentId()) return;
+
+    state.studentId = value;
+    saveStudentId(value);
+    renderStudentBadge();
+
+    // 换了学号 = 换了错题本，必须先把下半屏清空，
+    // 否则会短暂显示上一个学号的错题（看起来像"错题串号了"，很吓人）
+    resetWrongBook();
+    await loadErrorBook();
+  };
+
+  // change 在"失焦且值变了"时触发，正好覆盖"打完字点别处"这个最常见的行为
+  el.studentId.addEventListener('change', commit);
+  el.studentId.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      el.studentId.blur();   // 触发 change
+    }
+  });
+
+  // 错题明细里的「删除」按钮是动态生成的，用事件委托
+  el.errorLogList.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-error-id]');
+    if (!button) return;
+    const item = button.closest('.errorlog__item');
+    const kp = item ? item.querySelector('.errorlog__kp').textContent : '';
+    deleteErrorLog(button.dataset.errorId, kp);
+  });
 }
 
 /* ==========================================================================
@@ -2063,6 +2612,7 @@ async function loadStatus() {
       el.btnCheck.disabled = true;
       el.btnComment.disabled = true;
       el.btnFix.disabled = true;
+      el.btnDiagnose.disabled = true;
       el.actionHint.textContent = '后端未配置大模型；可在左侧「模型设置」里填自己的 API Key';
       toast('还没配置模型：可在左侧「模型设置」里选择模型并填入 API Key', 'info');
     }
@@ -2102,6 +2652,10 @@ const PANEL_MIN = {
   main: 400,      // 中间代码区最小宽度
   result: 280,    // 右侧结果区最小宽度
   code: 120,      // 代码区最小高度（需求没规定，取一个还能看到几行代码的值）
+  // 右侧面板上下分栏时，每一半的最小高度。
+  // 取 120 的理由：上半屏至少放得下"结论 + 两行说明"，
+  // 下半屏至少放得下"题目 + 提示折叠条"，再小就只剩一条标题栏了。
+  split: 120,
 };
 
 /** 分隔条占位宽度，必须与 CSS 里的 --resizer 保持一致（用于算可用空间） */
@@ -2152,6 +2706,24 @@ function clampCodeHeight(desired, cardHeight, actionsHeight) {
   return Math.round(Math.min(Math.max(desired, PANEL_MIN.code), max));
 }
 
+/**
+ * 把期望高度夹到「上半屏最小高度 ~ 给下半屏留够最小高度」之间（纯函数）。
+ *
+ * @param {number} desired     期望的「分析结果」高度
+ * @param {number} paneHeight  右侧面板的总高度
+ * @returns {number} 夹好的高度
+ *
+ * 上限的算法与代码区那根分隔条一致：总高减去分隔条自身（含它的上下外边距）、
+ * 再减去下半屏的最小高度，剩下的才是上半屏能用的最大值。
+ * 这样无论怎么拖，两半都不会有一边被挤没。
+ */
+function clampAnalysisHeight(desired, paneHeight) {
+  // 分隔条 8px + 它自己的上下 margin 各 4px
+  const reserved = RESIZER_SIZE + 8;
+  const max = Math.max(PANEL_MIN.split, paneHeight - reserved - PANEL_MIN.split);
+  return Math.round(Math.min(Math.max(desired, PANEL_MIN.split), max));
+}
+
 /** 读回上次保存的面板尺寸（没有或格式不对就用 CSS 里的默认值） */
 function loadSavedLayout() {
   try {
@@ -2196,11 +2768,23 @@ function applyCodeHeight(height) {
 }
 
 /**
+ * 应用「上半屏 / 下半屏」的分栏高度。
+ *
+ * 拖动前这个变量是 CSS 里的默认值 `46%`（随面板高度成比例）；
+ * 一旦用户拖过，就换成具体像素值——等价于"用户自己说了算"，
+ * 与代码区高度（--code-height）的处理方式保持一致。
+ */
+function applyAnalysisHeight(height) {
+  state.layout.analysis = height;
+  document.documentElement.style.setProperty('--analysis-h', `${height}px`);
+}
+
+/**
  * 绑定一根分隔条的拖动（三根共用这一份逻辑）。
  *
  * @param {HTMLElement} handle 分隔条元素
  * @param {string} axis        'x' = 左右拖动；'y' = 上下拖动
- * @param {string} kind        'sidebar' / 'result' / 'code'
+ * @param {string} kind        'sidebar' / 'result' / 'code' / 'split'
  */
 function bindResizer(handle, axis, kind) {
   if (!handle) return;   // 窄屏时元素可能不存在，容错处理
@@ -2218,10 +2802,14 @@ function bindResizer(handle, axis, kind) {
       ? (kind === 'sidebar'
           ? el.sidebar.getBoundingClientRect().width
           : el.resultPane.getBoundingClientRect().width)
-      : el.codeDropzone.getBoundingClientRect().height;
+      : (kind === 'split'
+          ? el.analysisCard.getBoundingClientRect().height
+          : el.codeDropzone.getBoundingClientRect().height);
 
     const startCardHeight = el.codeCard.getBoundingClientRect().height;
     const actionsHeight = el.codeActions ? el.codeActions.getBoundingClientRect().height : 0;
+    // 分栏拖动时，可分配的总高度就是右侧面板本身的高度
+    const paneHeight = el.resultPane.getBoundingClientRect().height;
     const otherWidth = axis === 'x'
       ? (kind === 'sidebar'
           ? el.resultPane.getBoundingClientRect().width
@@ -2239,7 +2827,8 @@ function bindResizer(handle, axis, kind) {
      *   · 结果区在分隔条**右边**：分隔条往右拖 → 右栏变窄（反向，-1），
      *     因为它是被"挤"掉的那一边。写成同向的话，拖起来就会觉得
      *     "面板根本不跟着鼠标走"，甚至越拖越反。
-     * 水平分隔条同理：代码区在分隔条上方，往下拖 → 变高（同向，+1）。
+     * 两根水平分隔条则是同向的：被调的那一块都在分隔条**上方**，
+     * 往下拖 = 变高（+1）。因此这里只有 'result' 是 -1。
      */
     const direction = kind === 'result' ? -1 : 1;
 
@@ -2251,6 +2840,8 @@ function bindResizer(handle, axis, kind) {
       if (axis === 'x') {
         const desired = startWidth + delta;
         applyPanelWidth(kind, clampPanelWidth(kind, desired, layoutRect.width, otherWidth));
+      } else if (kind === 'split') {
+        applyAnalysisHeight(clampAnalysisHeight(startWidth + delta, paneHeight));
       } else {
         const desired = startWidth + delta;
         applyCodeHeight(clampCodeHeight(desired, startCardHeight, actionsHeight));
@@ -2292,6 +2883,16 @@ function bindResizer(handle, axis, kind) {
                                            : (event.key === 'ArrowLeft' ? 1 : -1);
       applyPanelWidth(kind, clampPanelWidth(kind, current + step * direction, layoutRect.width, other));
       saveLayout();
+    } else if (kind === 'split') {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      const current = el.analysisCard.getBoundingClientRect().height;
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      applyAnalysisHeight(clampAnalysisHeight(
+        current + step * direction,
+        el.resultPane.getBoundingClientRect().height,
+      ));
+      saveLayout();
     } else {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
       event.preventDefault();
@@ -2312,6 +2913,10 @@ function bindResizer(handle, axis, kind) {
       el.codeDropzone.classList.remove('is-height-fixed');
       document.documentElement.style.removeProperty('--code-height');
       delete state.layout.code;
+    } else if (kind === 'split') {
+      // 回到 CSS 里的默认比例（46%），而不是某个写死的像素值
+      document.documentElement.style.removeProperty('--analysis-h');
+      delete state.layout.analysis;
     } else {
       const fallback = kind === 'sidebar' ? 300 : 380;
       applyPanelWidth(kind, fallback);
@@ -2321,11 +2926,13 @@ function bindResizer(handle, axis, kind) {
   });
 }
 
-/** 绑定三根分隔条，并恢复上次保存的尺寸 */
+/** 绑定四根分隔条，并恢复上次保存的尺寸 */
 function bindResizers() {
   bindResizer(el.resizerLeft, 'x', 'sidebar');
   bindResizer(el.resizerRight, 'x', 'result');
   bindResizer(el.resizerCode, 'y', 'code');
+  // 右侧面板「分析结果 ｜ 错题本」之间的水平分隔条
+  bindResizer(el.resizerResultSplit, 'y', 'split');
 
   const saved = loadSavedLayout();
   if (!saved) return;
@@ -2333,6 +2940,8 @@ function bindResizers() {
   if (typeof saved.result === 'number') applyPanelWidth('result', saved.result);
   // 代码区高度只在用户真的调过之后才恢复，否则保持自适应的默认行为
   if (typeof saved.code === 'number') applyCodeHeight(saved.code);
+  // 分栏高度同理：没拖过就保持 CSS 里的 46% 自适应比例
+  if (typeof saved.analysis === 'number') applyAnalysisHeight(saved.analysis);
 }
 
 /* ==========================================================================
@@ -2346,14 +2955,19 @@ function bindResizers() {
 function watchViewportForLayout() {
   const narrow = window.matchMedia('(max-width: 1280px)');
 
-  /** 窄屏时清除固定宽度，宽屏恢复用户设置 */
+  /** 窄屏时清除固定尺寸，宽屏恢复用户设置 */
   const sync = (isNarrow) => {
     if (isNarrow) {
       document.documentElement.style.removeProperty('--sidebar-w');
       document.documentElement.style.removeProperty('--result-w');
+      // 窄屏下右侧面板变成"整行 + 自然高度"，百分比分栏没有参照高度，
+      // 分隔条也被 CSS 隐藏了，因此这里连分栏高度一起清掉，
+      // 否则会把上一次拖出来的像素值带进窄屏布局，撑出一片空白。
+      document.documentElement.style.removeProperty('--analysis-h');
     } else {
       if (typeof state.layout.sidebar === 'number') applyPanelWidth('sidebar', state.layout.sidebar);
       if (typeof state.layout.result === 'number') applyPanelWidth('result', state.layout.result);
+      if (typeof state.layout.analysis === 'number') applyAnalysisHeight(state.layout.analysis);
     }
   };
 
@@ -2566,7 +3180,11 @@ function bindActions() {
   el.btnCheck.addEventListener('click', runCheck);
   el.btnComment.addEventListener('click', runComment);
   el.btnFix.addEventListener('click', runFix);
+  // 第 4 个按钮：诊断 + 举一反三（唯一会读写错题本的那个）
+  el.btnDiagnose.addEventListener('click', runDiagnose);
   el.refreshHistory.addEventListener('click', loadHistory);
+  // 重新读一次错题本（在别的设备/标签页里做过诊断时用得上）
+  el.refreshWrongBook.addEventListener('click', loadErrorBook);
 
   // ---- 本地项目库 ----
   // 重新扫描：学生把新作业拖进文件夹后点一下就刷新了
@@ -2659,7 +3277,7 @@ function guessNameFromPaste(text) {
 
 /** 页面入口 */
 async function init() {
-  // ---- 三根分隔条：拖动改面板尺寸（需求三）----
+  // ---- 四根分隔条：拖动改面板尺寸（需求三）----
   bindResizers();
   watchViewportForLayout();
 
@@ -2676,6 +3294,9 @@ async function init() {
   // ---- 模型设置（选模型 + 填自己的 API Key）----
   bindModelSettings();
 
+  // ---- 学号 + 错题本（右侧下半屏的数据源）----
+  bindStudentCard();
+
   bindActions();
 
   // 初始状态：还没有代码 → 占位提示显示、代码块隐藏、三个 AI 按钮禁用。
@@ -2685,7 +3306,11 @@ async function init() {
 
   // 并行请求：状态、历史、项目库、模型清单互不依赖，一起发更快。
   // 项目库放在最后且不 await 失败——它不可用也不该影响整页启动。
-  await Promise.all([loadStatus(), loadHistory(), loadLibrary(''), loadModels()]);
+  // loadErrorBook 也放在这里（而不是等学生点诊断）：错题本是长期资产，
+  // 刷新页面后应该立刻能看到自己的错题，而不是一片空白。
+  await Promise.all([
+    loadStatus(), loadHistory(), loadLibrary(''), loadModels(), loadErrorBook(),
+  ]);
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -18,8 +18,9 @@ from app.models.repository import utc_now
 if TYPE_CHECKING:
     pass
 
-# 学生可以对同一份代码做三种操作
-TutorAction = Literal["analyze", "check", "comment", "fix"]
+# 学生可以对同一份代码做的操作。
+# diagnose = 「错题本 + 举一反三」诊断：一次调用同时产出诊断结论与练习题。
+TutorAction = Literal["analyze", "check", "comment", "fix", "diagnose"]
 
 
 class TutorRecord(Base):

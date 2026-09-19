@@ -67,6 +67,8 @@ EXPECTED_TABLES = {
     "code_check_records",
     "code_fix_records",
     "comment_records",
+    # 错题本：每次诊断判定有错时归档，供"举一反三"出题时回查历史
+    "student_error_logs",
 }
 
 # README 必须包含的章节关键词（对应需求里点名的内容）
@@ -201,8 +203,12 @@ def check_readme_endpoints(paths: set[str]) -> None:
     print("=" * 72)
 
     readme = (BASE / "README.md").read_text(encoding="utf-8")
-    # 表格里的路径写成 `GET | /api/v1/xxx`，也可能出现在代码块里的 curl 命令中
-    documented = set(re.findall(r"/api/v1/[a-zA-Z0-9_/{}\-]+", readme))
+    # 表格里的路径写成 `GET | /api/v1/xxx`，也可能出现在代码块里的 curl 命令中。
+    # 这里用 /api/ 而不是 /api/v1/ 打头：项目里还有一个**不走版本前缀**的兼容
+    # 别名 `/api/analyze`（需求文档指定的路径，内部转调 /api/v1/tutor/diagnose）。
+    # 只认 /api/v1/ 的话，下面那条「后端每个前缀都在 README 里出现过」的反向检查
+    # 会漏掉这个前缀，等于文档少了整整一个模块却没人发现。
+    documented = set(re.findall(r"/api/[a-zA-Z0-9_/{}\-]+", readme))
     # 去掉正则误抓到的结尾标点与无关片段
     cleaned = {
         item.rstrip(".,;:、）)") for item in documented

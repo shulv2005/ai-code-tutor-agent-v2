@@ -62,6 +62,13 @@ EXPECTED_ROUTES = {
     "/api/v1/auth/set_key": {"post"},
     "/api/v1/auth/clear_key": {"post"},
     "/api/v1/auth/status": {"get"},
+    # 错题本 + 举一反三：诊断时会读该学号的历史错题，判定有错则归档
+    "/api/v1/tutor/diagnose": {"post"},
+    "/api/v1/tutor/errors": {"get"},
+    "/api/v1/tutor/errors/{error_id}": {"delete"},
+    # 兼容别名：需求文档给的路径是 /api/analyze，内部转调 /api/v1/tutor/diagnose。
+    # 它不在 /api/v1 前缀下，因此单独登记（也是唯一一条不按项目前缀走的接口）。
+    "/api/analyze": {"post"},
 }
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}

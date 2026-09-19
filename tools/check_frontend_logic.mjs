@@ -162,6 +162,8 @@ function register(id, rect) {
   'modelCard', 'modelSelect', 'modelApiKey', 'toggleKeyVisible', 'modelHint',
   'modelStatus', 'modelStatusText', 'saveModelKey', 'clearModelKey', 'refreshModels',
   'aiBadge', 'langBadge',
+  // 学号（错题本按学号归档）
+  'studentCard', 'studentId', 'studentBadge', 'studentHint',
   'codeTitle', 'codeLangBadge', 'code-placeholder', 'codeDropzone', 'codeBlock',
   'codeContent', 'clearCodeBtn',
   // 在线编辑
@@ -171,12 +173,26 @@ function register(id, rect) {
   'replaceInput', 'confirmModal', 'confirmTitle', 'confirmText',
   'confirmOkBtn', 'confirmCancelBtn',
   'resizerLeft', 'resizerRight', 'resizerCode', 'codeCard', 'codeActions',
-  'btnCheck', 'btnComment', 'btnFix', 'actionHint',
+  // 右侧面板上下分栏（分析结果 / 错题本）
+  'resultPane', 'analysisCard', 'resizerResultSplit',
+  'btnCheck', 'btnComment', 'btnFix', 'btnDiagnose', 'actionHint',
   'resultEmpty', 'resultCheck', 'resultComment', 'resultFix',
+  'resultDiagnose', 'analysisBadge',
   'scoreCircle', 'scoreValue', 'scoreLevel', 'scoreSummary', 'issueList',
   'highlightBox', 'highlightList',
   'commentSummary', 'commentCode',
   'fixSummary', 'fixNoError', 'fixBody', 'changeList', 'fixCode',
+  // 诊断结论（上半屏里属于 /diagnose 的那一块）
+  'diagnoseStatus', 'diagnoseType', 'diagnoseMessage',
+  'diagnoseKpBox', 'diagnoseKpList', 'diagnoseLogged',
+  // 错题本（下半屏）
+  'wrongBookCard', 'wrongBookCount', 'refreshWrongBook',
+  'wrongBookEmpty', 'wrongBookBody',
+  'weakPointBox', 'weakPointList',
+  'historySummaryBox', 'historySummary',
+  'exerciseBox', 'exerciseTitle', 'exerciseDesc', 'exerciseHint',
+  'explanationBox', 'knowledgeExplanation',
+  'errorListBox', 'errorLogList',
   'toast',
 ].forEach((id) => register(id));
 
@@ -189,9 +205,14 @@ const layoutElement = makeElement('layout');
 layoutElement._rect = { width: 1600, height: 800, top: 0, left: 0 };
 
 const sidebarElement = elementsById.get('dropzone');   // querySelector('.sidebar')
-const resultPaneElement = makeElement('resultPane');
+// 右侧结果区：app.js 现在用 getElementById('resultPane') 取它。
+// 老的 `.pane:last-of-type` 选择器仍在这里保留，两条路径必须指向**同一个**元素，
+// 否则"拖动右分隔条"的断言会作用在一个游离的节点上，测不出真实行为。
+const resultPaneElement = elementsById.get('resultPane');
 resultPaneElement._rect = { width: 380, height: 700, top: 0, left: 1180 };
 sidebarElement._rect = { width: 300, height: 700, top: 0, left: 20 };
+// 上半屏「分析结果」的初始高度：占面板 46%（与 CSS 里的默认比例一致）
+elementsById.get('analysisCard')._rect = { width: 380, height: 322, top: 0, left: 1180 };
 
 /* ---------------------------------------------------------------------------
    2. window / document / hljs 桩
@@ -235,6 +256,8 @@ documentStub.documentElement._onStyleSet = (name, value) => {
   if (name === '--sidebar-w') sidebarElement._rect.width = pixels;
   if (name === '--result-w') resultPaneElement._rect.width = pixels;
   if (name === '--code-height') elementsById.get('codeDropzone')._rect.height = pixels;
+  // 上下分栏高度：让下次拖动从新的高度起算（与真实布局回流一致）
+  if (name === '--analysis-h') elementsById.get('analysisCard')._rect.height = pixels;
 };
 
 const localStorageStub = {
@@ -367,6 +390,11 @@ const epilogue = `
   saveAndTestModel, clearModelKey, bindModelSettings,
   api, codeFormData,
   cancelPendingHighlight, init,
+  // 错题本 + 举一反三（右侧面板上下分栏）
+  showResult, clampAnalysisHeight, applyAnalysisHeight,
+  currentStudentId, requireStudentId, renderStudentBadge, bindStudentCard,
+  renderMarkdown, renderDiagnose, renderWrongBook, renderWeakPoints,
+  renderErrorLogList, resetWrongBook, loadErrorBook, runDiagnose, deleteErrorLog,
 };
 `;
 vm.runInContext(source + epilogue, context, { filename: 'app.js' });
@@ -1281,6 +1309,211 @@ check('会话过期后调用 AI → 徽章自动复位成「AI 未启用」',
   el.aiBadge.textContent);
 check('并提示学生重新填 Key',
   el.modelStatusText.textContent.includes('请重新填写'), el.modelStatusText.textContent);
+
+/* ---------------------------------------------------------------------------
+   11.5 错题本 + 举一反三（右侧面板上下分栏）
+   ------------------------------------------------------------------------- */
+console.log();
+console.log('='.repeat(72));
+console.log('错题本 + 举一反三  上下分栏 / 学号归档 / Markdown 安全渲染');
+console.log('='.repeat(72));
+
+api.bindResizers();
+
+// ---- 1. 分栏高度的夹取（纯函数）----
+check('分栏最小高度常量存在（上下两半各 120px）', api.panel.PANEL_MIN.split === 120);
+check('上半屏想拖到 10px → 夹回最小高度 120px',
+  api.clampAnalysisHeight(10, 700) === 120, String(api.clampAnalysisHeight(10, 700)));
+check('上半屏想拖到 9999px → 给下半屏留够最小高度（700-16-120=564）',
+  api.clampAnalysisHeight(9999, 700) === 564, String(api.clampAnalysisHeight(9999, 700)));
+check('拖到 300px → 原样保留（范围内不干预）', api.clampAnalysisHeight(300, 700) === 300);
+
+// ---- 2. 拖动分栏分隔条 ----
+const splitStart = el.analysisCard.getBoundingClientRect().height;
+fire(el.resizerResultSplit, 'pointerdown', { clientY: 300, pointerId: 21 });
+fire(el.resizerResultSplit, 'pointermove', { clientY: 380, pointerId: 21 });   // 往下 80px
+const splitHeight = parseInt(documentStub.documentElement._style['--analysis-h'], 10);
+check('往下拖分栏条 → 上半屏（分析结果）变高',
+  splitHeight === splitStart + 80, `${splitStart}px → ${splitHeight}px`);
+check('拖动分栏条时 body 锁成 row-resize',
+  documentStub.body.classList.contains('is-resizing-row'));
+fire(el.resizerResultSplit, 'pointerup', { pointerId: 21 });
+check('松开后分栏高度写进了 localStorage（刷新后沿用）',
+  JSON.parse(localStorageStub.getItem('ai-tutor.layout')).analysis === splitHeight);
+
+// 往上拖到越界：夹回最小高度
+fire(el.resizerResultSplit, 'pointerdown', { clientY: 400, pointerId: 22 });
+fire(el.resizerResultSplit, 'pointermove', { clientY: 0, pointerId: 22 });   // 一路往上
+const flooredSplit = parseInt(documentStub.documentElement._style['--analysis-h'], 10);
+fire(el.resizerResultSplit, 'pointerup', { pointerId: 22 });
+check('一路往上拖 → 上半屏停在最小高度 120px（不会被拖没）',
+  flooredSplit === 120, String(flooredSplit));
+
+// ---- 3. 学号 ----
+check('一开始没填学号：currentStudentId() 是空串', api.currentStudentId() === '');
+check('没填学号时 requireStudentId() 返回 false（拦住不发请求）',
+  api.requireStudentId() === false);
+check('没填学号时提示里说清了原因（不是默默什么都不做）',
+  el.toast.textContent.includes('学号'), el.toast.textContent);
+check('没填学号时光标自动跳到输入框', el.studentId._focused === true);
+
+api.state.studentId = '2024010101';
+api.renderStudentBadge();
+check('填了学号 → 徽章变「已填写」并变绿',
+  el.studentBadge.textContent === '已填写'
+  && el.studentBadge.classList.contains('badge--ok'), el.studentBadge.textContent);
+check('填了学号 → 提示语带上具体学号',
+  el.studentHint.textContent.includes('2024010101'), el.studentHint.textContent);
+check('填了学号之后 requireStudentId() 放行', api.requireStudentId() === true);
+
+// ---- 4. 错题本列表渲染 ----
+const ERROR_BOOK = {
+  student_id: '2024010101',
+  total: 2,
+  items: [
+    { id: 11, student_id: '2024010101', filename: 'demo.py', language: 'python',
+      error_type: '逻辑错误', knowledge_point: '循环边界', ai_feedback: '少遍历了最后一个元素',
+      code_snippet: 'for i in range(1, n):', created_at: '2024-05-02T10:00:00' },
+    { id: 12, student_id: '2024010101', filename: 'demo.c', language: 'c',
+      error_type: '语法错误', knowledge_point: '分号', ai_feedback: '第 3 行缺少分号',
+      code_snippet: 'int a = 1', created_at: '2024-05-01T09:00:00' },
+  ],
+  weak_points: [
+    { knowledge_point: '循环边界', count: 3 },
+    { knowledge_point: '分号', count: 1 },
+  ],
+};
+
+queueResponse(ERROR_BOOK);
+await api.loadErrorBook();
+const errorListCall = findCall('GET', '/api/v1/tutor/errors');
+check('错题本：拉的是 GET /api/v1/tutor/errors', Boolean(errorListCall));
+check('错题本：请求带上了 X-Student-Id（否则会读到别人的错题本）',
+  Boolean(errorListCall) && errorListCall.options.headers['X-Student-Id'] === '2024010101');
+check('错题本：右上角显示条数', el.wrongBookCount.textContent === '错题本 2 条',
+  el.wrongBookCount.textContent);
+check('错题本：易错知识点区显示出来了', el.weakPointBox.hidden === false);
+check('错题本：次数最多的知识点条形占满 100%',
+  el.weakPointList.innerHTML.includes('width:100%'));
+check('错题本：明细按条渲染（2 条）',
+  (el.errorLogList.innerHTML.match(/errorlog__item/g) || []).length === 2);
+check('错题本：明细里带上 AI 反馈原文',
+  el.errorLogList.innerHTML.includes('少遍历了最后一个元素'));
+check('错题本：有错题时下半屏不再是空状态', el.wrongBookEmpty.hidden === true);
+
+// 空错题本
+queueResponse({ student_id: '2024010101', total: 0, items: [], weak_points: [] });
+await api.loadErrorBook();
+check('错题本为空时显示空状态（不是一片空白）', el.wrongBookEmpty.hidden === false);
+check('错题本为空时条数显示 0', el.wrongBookCount.textContent === '错题本 0 条');
+
+// ---- 5. 诊断结论（上半屏）----
+const DIAGNOSE_REPLY = {
+  student_id: '2024010101', filename: 'demo.py', language: 'python', language_label: 'Python',
+  analysis: {
+    status: 'error', error_type: '逻辑错误',
+    message: '函数名叫 add，却做了减法。',
+    knowledge_points: ['函数返回值', '运算符使用'],
+  },
+  wrong_question_book: {
+    history_summary: '你在「循环边界」上已经错了 3 次，是最需要补的地方。',
+    new_exercise: {
+      question_title: '实现 subtract 函数',
+      question_description: '写一个 subtract(a, b)，返回两数之差。',
+      hint: '注意参数的先后顺序，不要写反。',
+    },
+    knowledge_explanation: '## 运算符\n\n用 `+` 表示相加。',
+  },
+  history_count: 2, history_total: 3, weak_points: [],
+  logged: true, error_log_id: 9, record_id: 5, model: 'fake', duration_ms: 12, warnings: [],
+};
+
+api.showResult('diagnose');
+check('切到诊断结果时，其它三块结果被隐藏',
+  el.resultDiagnose.hidden === false && el.resultCheck.hidden === true
+  && el.resultComment.hidden === true && el.resultFix.hidden === true);
+check('上半屏标题标出「AI 诊断」（免得把上次检测当成这次结论）',
+  el.analysisBadge.textContent === 'AI 诊断' && el.analysisBadge.hidden === false);
+
+api.renderDiagnose(DIAGNOSE_REPLY);
+check('诊断：有错时结论徽章变红', el.diagnoseStatus.classList.contains('is-error'));
+check('诊断：结论文字说「发现问题」', el.diagnoseStatus.textContent.includes('发现问题'),
+  el.diagnoseStatus.textContent);
+check('诊断：错误类型渲染出来了', el.diagnoseType.textContent === '逻辑错误');
+check('诊断：诊断说明渲染出来了', el.diagnoseMessage.textContent.includes('add'));
+check('诊断：知识点标签渲染了 2 个',
+  (el.diagnoseKpList.innerHTML.match(/chip--static/g) || []).length === 2);
+check('诊断：明确告诉学生"已记入错题本"',
+  el.diagnoseLogged.hidden === false && el.diagnoseLogged.textContent.includes('已记入错题本'),
+  el.diagnoseLogged.textContent);
+
+api.renderDiagnose({
+  ...DIAGNOSE_REPLY,
+  analysis: { status: 'success', error_type: '无错误', message: '写得很规范，继续保持！',
+              knowledge_points: [] },
+  logged: false, history_total: 3,
+});
+check('诊断：通过时不显示红色徽章', !el.diagnoseStatus.classList.contains('is-error'));
+check('诊断：通过时说明"没有记入错题本"',
+  el.diagnoseLogged.textContent.includes('没有记入错题本'), el.diagnoseLogged.textContent);
+check('诊断：通过且无知识点时藏掉标签区', el.diagnoseKpBox.hidden === true);
+
+// ---- 6. 下半屏：历史总结 / 新题目 / 解析 ----
+api.renderWrongBook(DIAGNOSE_REPLY.wrong_question_book, DIAGNOSE_REPLY);
+check('错题本：历史总结渲染出来了',
+  el.historySummaryBox.hidden === false
+  && el.historySummary.textContent.includes('循环边界'));
+check('错题本：新题目标题渲染出来了',
+  el.exerciseTitle.textContent === '实现 subtract 函数', el.exerciseTitle.textContent);
+check('错题本：题目描述与提示都渲染出来了',
+  el.exerciseDesc.textContent.includes('subtract') && el.exerciseHint.textContent.includes('顺序'));
+check('错题本：知识点解析区显示出来了', el.explanationBox.hidden === false);
+check('错题本：写明"本次参考了 N 条历史错题"（学生看得出 AI 读过他的错题本）',
+  el.studentHint.textContent.includes('本次参考了 2 条'), el.studentHint.textContent);
+
+// ---- 7. Markdown 渲染与 XSS 消毒 ----
+delete windowStub.marked;
+delete windowStub.DOMPurify;
+api.renderMarkdown(el.knowledgeExplanation, '<script>alert(1)</script>\n换行');
+check('Markdown 库缺失时降级为转义后的纯文本（不白屏、不裸奔）',
+  el.knowledgeExplanation.innerHTML.includes('&lt;script&gt;'),
+  el.knowledgeExplanation.innerHTML);
+
+let purifiedInput = null;
+windowStub.marked = {
+  parse: (source) => `<h2>标题</h2><script>alert('x')</script><p>${source}</p>`,
+};
+windowStub.DOMPurify = {
+  sanitize: (html) => {
+    purifiedInput = html;
+    return html.replace(/<script>[\s\S]*?<\/script>/g, '');
+  },
+};
+api.renderMarkdown(el.knowledgeExplanation, '## 标题');
+check('Markdown：marked 的输出会先交给 DOMPurify（这一步是防 XSS 的关键）',
+  purifiedInput !== null && purifiedInput.includes('<h2>'));
+check('Markdown：写进 DOM 的是消毒后的 HTML（script 被剔除）',
+  !el.knowledgeExplanation.innerHTML.includes('<script>')
+  && el.knowledgeExplanation.innerHTML.includes('<h2>'),
+  el.knowledgeExplanation.innerHTML);
+delete windowStub.marked;
+delete windowStub.DOMPurify;
+
+// ---- 8. 删除一条错题：二次确认 + 带上学号 ----
+queueResponse({}, { status: 204 });     // DELETE /errors/11
+queueResponse(ERROR_BOOK);              // 删除后重新拉列表
+const errorDeletePromise = api.deleteErrorLog(11, '循环边界');
+check('删除错题前先弹确认框', el.confirmModal.classList.contains('hidden') === false);
+check('确认框里写明要删哪一条（不是含糊的"确定吗"）',
+  el.confirmText.innerHTML.includes('循环边界'), el.confirmText.innerHTML);
+check('确认框里说明白"AI 就不会再参考它了"',
+  el.confirmText.innerHTML.includes('不会再参考'));
+fire(el.confirmOkBtn, 'click');
+await errorDeletePromise;
+check('确认后发出 DELETE /api/v1/tutor/errors/11',
+  Boolean(findCall('DELETE', '/api/v1/tutor/errors/11')));
+check('删除后重新拉了一次错题本（界面立刻同步）',
+  fetchCalls.filter((call) => call.url.includes('/api/v1/tutor/errors')).length >= 2);
 
 /* ---------------------------------------------------------------------------
    12. 汇总

@@ -10,6 +10,7 @@ from app.models.code import CodeFile, CodeSymbol
 from app.models.code_check import CodeCheckRecord
 from app.models.code_fix import CodeFixRecord
 from app.models.comment import CommentRecord
+from app.models.error_log import StudentErrorLog
 from app.models.file_record import ClassifiedFileRecord
 from app.models.repository import Repository, RepoStatus, utc_now
 from app.models.tutor import TutorAction, TutorRecord
@@ -23,6 +24,7 @@ __all__ = [
     "CommentRecord",
     "RepoStatus",
     "Repository",
+    "StudentErrorLog",
     "TutorAction",
     "TutorRecord",
     "utc_now",

@@ -171,6 +171,9 @@ def audit_artifacts() -> list[str]:
 
     allowed_dirs = {
         "app", "tests", "tools", "frontend", "data", "examples", "docker", ".venv",
+        # docs/ 放的是"给人看的"参考材料（例如错题本表的建表 SQL），
+        # 不是运行时产物，登记进来免得每次审计都把它当成可疑目录报一遍。
+        "docs",
     }
     junk: list[str] = []
     for entry in sorted(BASE.iterdir()):
