@@ -433,6 +433,7 @@ const epilogue = `
   // 响应式布局：三档断点 / 缩放后重新夹取 / 一键恢复
   tiers: LAYOUT_TIERS, layoutTier, panelOtherWidth, reclampLayout,
   syncLayoutVars, syncLayoutTiers, watchViewportForLayout, resetLayout,
+  analysisClampReference,
   reserved: PANEL_RESERVED,
 };
 `;
@@ -1623,13 +1624,27 @@ check('窗口从 1600 缩到 1200：左栏被重新夹小（不再横向溢出�
 check('窗口缩小后仍然保住用户意图（拉大回去能自动恢复）',
   api.state.layout.sidebar === 900, String(api.state.layout.sidebar));
 
-// ---- 5. 跨档位：窄档交回 CSS，回到宽档恢复用户设置 ----
+// ---- 5. 跨档位：窄档清掉"宽度"类设置，但"高度"类设置三档都保留 ----
 setViewportWidth(700);
+api.state.layout = { sidebar: 900, result: 380, analysis: 280, code: 260 };
 api.syncLayoutTiers();
 check('窄档：清掉左栏固定宽度（交回 CSS 自然堆叠）',
   documentStub.documentElement._style['--sidebar-w'] === undefined);
-check('窄档：清掉上下分栏高度',
-  documentStub.documentElement._style['--analysis-h'] === undefined);
+check('窄档：清掉结果区宽度', documentStub.documentElement._style['--result-w'] === undefined);
+check('窄档：保留上下分栏高度（单栏下两半的比例同样可调）',
+  parseInt(documentStub.documentElement._style['--analysis-h'], 10) === 280,
+  documentStub.documentElement._style['--analysis-h']);
+check('窄档：保留代码区高度',
+  parseInt(documentStub.documentElement._style['--code-height'], 10) === 260,
+  documentStub.documentElement._style['--code-height']);
+check('窄档：拖过上下分栏后给面板加 .is-split-fixed（让上半屏内部滚动）',
+  el.resultPane.classList.contains('is-split-fixed'));
+
+// 窄档下上下分栏照样能拖：上界按视口高度算，而不是被内容撑开的面板高度
+const narrowPaneRef = api.clampAnalysisHeight(99999, api.analysisClampReference());
+check('窄档：上下分栏的拖动上界按视口高度算（不会把下半屏顶出屏幕）',
+  narrowPaneRef < 99999 && narrowPaneRef >= api.panel.PANEL_MIN.split,
+  `上界 ${narrowPaneRef}px`);
 
 setViewportWidth(1600);
 api.syncLayoutTiers();

@@ -174,6 +174,113 @@ def _media_block(css: str, query: str) -> str:
     return ""
 
 
+def _strip_css_comments(css: str) -> str:
+    """去掉 CSS 注释，便于按大括号定位选择器。"""
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+
+def _enclosing_selector(css: str, pos: int) -> str:
+    """返回 pos 处声明所属规则的选择器文本。
+
+    从 pos 往回走，遇到深度为 0 的 `{` 就说明找到了当前规则的开始，
+    再取它前面那段（到上一个 `}` / `{` / `;` 为止）就是选择器。
+    媒体查询会自然被跳过（外层那个 `{` 的深度不为 0）。
+    """
+    depth = 0
+    for index in range(pos, -1, -1):
+        char = css[index]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth == 0:
+                cut = max(
+                    css.rfind("}", 0, index),
+                    css.rfind("{", 0, index),
+                    css.rfind(";", 0, index),
+                )
+                return css[cut + 1 : index].strip()
+            depth -= 1
+    return ""
+
+
+def check_css_var_contract(page: dict, css: str, js: str) -> None:
+    """3.7 CSS 变量契约：JS 写在 <html> 上的变量，CSS 必须真的用得上、且没被遮蔽。
+
+    **这条检查是被一个真实 bug 逼出来的**：
+    `.pane--split` 里写了 `--analysis-h: 46%;`，而 JS 是把 `--analysis-h`
+    写在 `document.documentElement` 上、靠继承往下传的。自定义属性一旦在
+    **本元素**上被声明，就会把继承值遮蔽掉——于是"上下分栏"的分隔条
+    拖起来毫无反应，而且不报任何错。行为测试当时只断言了"变量被写进了
+    <html>"，恰好把最关键的一环（这个值到底有没有生效）漏掉了。
+
+    三条规则：
+
+    1. JS 写了某个变量，CSS 里必须有人 `var(--x)` 消费它（否则是死变量）；
+    2. 它**不能**被 `:root` 之外的选择器声明——那会遮蔽 JS 写在 <html> 上的值；
+    3. 它要么在 `:root` 里有默认值，要么消费处写成 `var(--x, 默认值)`——
+       否则用户没拖过时，那条 CSS 会因为变量未定义而整条失效。
+       正确示范：`flex: 0 0 var(--analysis-h, 46%)`。
+    """
+    print()
+    print("=" * 72)
+    print(f"3.7 CSS 变量契约：JS 写在 <html> 上的变量是否真的生效（{page['name']}）")
+    print("=" * 72)
+
+    written = set(
+        re.findall(
+            r"documentElement\.style\.(?:setProperty|removeProperty)\(\s*'(--[a-z0-9-]+)'",
+            js,
+        )
+    )
+    if not written:
+        failures.append(f"{page['name']} 没找到任何写在 <html> 上的 CSS 变量")
+        print("  找不到变量 ×")
+        return
+
+    clean = _strip_css_comments(css)
+
+    # 变量 -> 声明它的选择器集合
+    declarations: dict[str, set[str]] = {}
+    for match in re.finditer(r"(--[a-z0-9-]+)\s*:", clean):
+        name = match.group(1)
+        declarations.setdefault(name, set()).add(_enclosing_selector(clean, match.start()))
+
+    root_declared = {name for name, sels in declarations.items() if ":root" in sels}
+
+    problems: list[str] = []
+    for name in sorted(written):
+        consumers = [m.start() for m in re.finditer(re.escape(f"var({name}"), clean)]
+        if not consumers:
+            problems.append(f"{name}：JS 在写它，CSS 里却没有任何 var({name}) 消费")
+            continue
+
+        # 规则 2：非 :root 的声明会遮蔽 JS 写在 <html> 上的值
+        others = sorted(sel for sel in declarations.get(name, set()) if sel != ":root")
+        if others:
+            problems.append(
+                f"{name}：被 `{others[0]}` 声明在本元素上，会**遮蔽** JS 写在 <html> 上的值"
+                f"（拖动会毫无反应）——默认值请写进 var() 的第二个参数"
+            )
+            continue
+
+        # 规则 3：要有兜底默认值
+        if name in root_declared:
+            continue
+        has_fallback = re.search(rf"var\(\s*{re.escape(name)}\s*,", clean) is not None
+        if not has_fallback:
+            problems.append(
+                f"{name}：既没有 :root 默认值，也没写 var({name}, 默认值) 兜底"
+                f"——用户没拖过时这条样式会整条失效"
+            )
+
+    print(f"  JS 写在 <html> 上 : {'、'.join(sorted(written))}")
+    print(f"  其中会被遮蔽       : {'无 ✓' if not problems else '见下 ✗'}")
+    for item in problems:
+        print(f"      · {item}")
+    if problems:
+        failures.append(f"{page['name']} CSS 变量契约有 {len(problems)} 处问题")
+
+
 def check_hidden_toggle(page: dict, html: str, js: str, css: str) -> None:
     """3.5 显隐控制检查：JS 用 .hidden 控制的元素，CSS 不能把 hidden 覆盖掉。
 
@@ -414,6 +521,7 @@ def main() -> int:
         check_dom_ids(page, html, js)
         check_css_classes(page, html, js, css)
         check_layout_contract(page, css, js)
+        check_css_var_contract(page, css, js)
         check_hidden_toggle(page, html, js, css)
         check_api_paths(page, js, operations)
         if index < len(PAGES) - 1:

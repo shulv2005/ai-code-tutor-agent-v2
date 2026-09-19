@@ -1123,9 +1123,11 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 }
 
 @media (max-width: 899px) {
-  /* 单栏：整页自然滚动。宽度已经没有"分栏"可言，因此所有调宽度的
-     分隔条都藏掉；只留**代码区高度**那根——它在单栏下依然有用
-     （把代码区调高一点看长文件）。 */
+  /* 单栏：整页自然滚动。宽度已经没有"分栏"可言，因此*调宽度*的那几根
+     分隔条都藏掉；留下的两根水平分隔条在单栏下依然有用：
+       · 代码区高度     —— 把代码区调高看长文件
+       · 分析结果/错题本 —— 把上下两半调成自己顺手的比例
+     （曾经把上下分栏那根也一起藏了，用户在这一档就完全调不了两半的比例。） */
   .layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
@@ -1133,12 +1135,13 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
     /* 高度交给内容：这一档就是要让整页滚起来 */
     flex: 0 0 auto;
   }
-  #resizerLeft, #resizerRight, #resizerResultSplit { display: none; }
+  #resizerLeft, #resizerRight { display: none; }
   .sidebar, .pane { overflow: visible; }
   .change__diff { grid-template-columns: 1fr; }
-  /* 上下分栏退回自然堆叠：结果区的两半按内容铺开 */
+  /* 上下分栏在这一档也是能拖的：没拖过时 = 内容自然高度（默认 46% 在
+     自动高度里会退化成内容高度），拖过之后 JS 给面板加 .is-split-fixed，
+     上半屏固定高度、内容自己滚（见上面 .is-split-fixed 的规则）。 */
   .pane--split { overflow: visible; }
-  .pane--split > .card { flex: none; }
   .card__scroll { overflow: visible; }
 }
 
@@ -1157,14 +1160,21 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
    --------------------------------------------------------------------------
    上半 #analysisCard   = 当前代码的分析结果（检测 / 注释 / 改错 / 诊断结论）
    下半 #wrongBookCard  = 错题本 & 举一反三（跨次累积，始终可见）
-   中间一根水平分隔条，两半的高度比例写进 CSS 变量 --analysis-h。
+   中间一根水平分隔条，上下两半的高度写进 CSS 变量 --analysis-h。
 
-   为什么用百分比 flex-basis 而不是固定 px：
-   窗口一变矮，固定 px 就会让下半屏被压成一条缝甚至完全看不见。
-   百分比随容器高度成比例变化，学生拖过一次之后才由他自己说了算。
+   【务必守住的写法】默认值必须写在 var() 的第二个参数里：
+       flex: 0 0 var(--analysis-h, 46%);
+   **不能**在这个选择器里写 `--analysis-h: 46%;`。
+   因为 JS 是通过 `document.documentElement.style.setProperty('--analysis-h', …)`
+   写在 <html> 上的，靠继承往下传；而自定义属性一旦在**本元素**上被声明，
+   就会把继承值遮蔽掉——面板将永远用自己的 46%，拖动分隔条完全没反应，
+   且不报任何错。代码区高度（`var(--code-height, 320px)`）用的就是这个正确写法。
+   tools/check_frontend.py 的「布局契约」检查会拦住这种遮蔽。
+
+   为什么默认用百分比而不是固定 px：窗口一变矮，固定 px 会把下半屏压成一条缝；
+   百分比随容器高度成比例变化，用户拖过一次之后才由他自己说了算。
    ========================================================================== */
 .pane--split {
-  --analysis-h: 46%;   /* 上半部分占比；JS 拖分隔条时改这个值 */
   /* 两半各自滚动，外层不再滚：否则会出现"双滚动条"，学生不知道在拖哪个 */
   overflow: hidden;
   gap: 0;
@@ -1172,8 +1182,16 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .pane--split > .card { min-height: 0; }
 
-#analysisCard { flex: 0 0 var(--analysis-h); }
+/* 默认 46%，用户拖过之后 JS 会在 <html> 上写具体像素值 */
+#analysisCard { flex: 0 0 var(--analysis-h, 46%); }
 #wrongBookCard { flex: 1 1 0; }
+
+/* 用户拖过上下分栏之后（JS 给面板加 .is-split-fixed）：
+   上半屏按固定高度显示，内容在自己区域里滚。
+   单栏档（<900px）同样适用——那一档面板高度是内容撑开的，
+   不套这条的话固定高度会让内容溢出到下半屏上面去。 */
+.pane--split.is-split-fixed { overflow: hidden; }
+.pane--split.is-split-fixed .card__scroll { overflow-y: auto; }
 
 /* 卡片标题固定、内容区自己滚动 —— 错题本的知识点解析可能很长，
    不能让标题跟着一起滚出屏幕（学生就不知道自己看的是哪一栏了）。 */

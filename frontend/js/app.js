@@ -2708,6 +2708,27 @@ function applyCodeHeight(height, remember = true) {
 function applyAnalysisHeight(height, remember = true) {
   if (remember) state.layout.analysis = height;
   document.documentElement.style.setProperty('--analysis-h', `${height}px`);
+  // 标记"用户已经手工定过上下两半的比例"。
+  // 单栏档（<900px）里右侧面板的高度是由内容撑开的，固定高度会让内容
+  // 溢出到下半屏上面去——靠这个类让上半屏改成内部滚动。
+  el.resultPane.classList.add('is-split-fixed');
+}
+
+/**
+ * 上下分栏夹取时用到的"可分配总高度"。
+ *
+ * · 宽档 / 中档：右侧面板有确定高度，直接用它的高度；
+ * · 窄档：面板高度由内容撑开（可能两三千像素），拿它当上界等于没有上界——
+ *   用户能把上半屏拖到把下半屏顶出屏幕。所以改用视口高度、留出余量。
+ *
+ * 与 CSS 的媒体查询对应关系：窄档 = `max-width: 899px`。
+ */
+function analysisClampReference() {
+  const paneHeight = el.resultPane.getBoundingClientRect().height;
+  if (layoutTier() !== 'narrow') return paneHeight;
+  const viewport = window.innerHeight || 800;
+  // 留出顶部栏 + 两张卡片标题 + 下半屏至少露个头的位置
+  return Math.max(viewport - 220, PANEL_MIN.split * 2 + 40);
 }
 
 /**
@@ -2924,7 +2945,11 @@ function bindResizers() {
 /**
  * 把已保存的尺寸按**当前**窗口重新夹一遍。
  *
- * 只在宽/中档做（窄屏是自然堆叠，尺寸由内容决定，没有可夹的东西）。
+ * 分两类处理：
+ *   · **宽度类**（左栏 / 结果区）：只在"有左右分栏"的档位才有意义，窄档不夹；
+ *   · **高度类**（代码区 / 上下分栏）：三档都有意义，都要夹。
+ *     窄档下如果提前 return，这两样设置会在窄屏打开页面时被静默忽略。
+ *
  * 每次都用保存值而不是当前渲染值来算：用户拖出来的"意图尺寸"要保住，
  * 窗口只是临时变小了，拖大回去时应当恢复成他习惯的样子。
  */
@@ -2932,9 +2957,8 @@ function reclampLayout() {
   const tier = layoutTier();
   const layoutWidth = document.querySelector('.layout').getBoundingClientRect().width;
 
-  // 宽度/分栏只在"有分栏"的档位才有意义；窄档是自然堆叠，没有可夹的东西。
   // 注意每个 apply* 的第三个参数传 false：这里算出来的是"当前窗口下能显示的值"，
-  // 不是用户意图。传 true 会把用户拖出来的宽度永久改成被压小后的值。
+  // 不是用户意图。传 true 会把用户拖出来的尺寸永久改成被压小后的值。
   if (tier !== 'narrow') {
     if (typeof state.layout.sidebar === 'number') {
       applyPanelWidth('sidebar', clampPanelWidth(
@@ -2947,15 +2971,14 @@ function reclampLayout() {
         'result', state.layout.result, layoutWidth, panelOtherWidth('result'),
       ), false);
     }
-    if (typeof state.layout.analysis === 'number') {
-      applyAnalysisHeight(clampAnalysisHeight(
-        state.layout.analysis, el.resultPane.getBoundingClientRect().height,
-      ), false);
-    }
   }
 
-  // 代码区高度**三档都保留**：它在单栏下同样有用（把代码区调高看长文件），
-  // 所以放在 narrow 的判断之外——否则窄屏打开页面时这个设置会静默失效。
+  // ---- 高度类：三档都夹 ----
+  if (typeof state.layout.analysis === 'number') {
+    applyAnalysisHeight(clampAnalysisHeight(
+      state.layout.analysis, analysisClampReference(),
+    ), false);
+  }
   if (typeof state.layout.code === 'number') {
     applyCodeHeight(clampCodeHeight(
       state.layout.code,
@@ -2968,31 +2991,36 @@ function reclampLayout() {
 /**
  * 按当前档位决定哪些 CSS 变量该生效、哪些该交还给 CSS 默认值。
  *
- * · 窄屏：全部清掉（单栏自然堆叠，任何固定宽度都只会帮倒忙）；
- * · 中屏：保留左栏宽度与分栏高度（这两样依然有意义），清掉结果区宽度；
- * · 宽屏：全部按用户保存的值恢复。
+ * 分成两类，避免"某个设置在某档位上被静默忽略"：
+ *
+ * · **宽度类**（--sidebar-w / --result-w）——只有存在左右分栏时才有意义：
+ *     窄档：全部清掉（单栏自然堆叠，固定宽度只会帮倒忙）；
+ *     中档：清掉结果区宽度（它独占一整行），保留左栏宽度；
+ *     宽档：两个都按用户保存的值恢复。
+ *
+ * · **高度类**（--analysis-h）——"上下分栏"在**三档都成立**：
+ *     宽/中档是右侧面板内部的上下分栏；窄档是同一张页面上的上下两块。
+ *     所以任何档位都要按用户设置恢复，不能清掉。
+ *     （代码区高度 --code-height 由 reclampLayout 统一处理，同理三档都保留。）
  */
 function syncLayoutVars() {
   const tier = layoutTier();
   const root = document.documentElement.style;
 
+  // ---- 宽度类 ----
   if (tier === 'narrow') {
     root.removeProperty('--sidebar-w');
     root.removeProperty('--result-w');
-    root.removeProperty('--analysis-h');
-    // 代码区高度**不清**：它在单栏下同样有用（把代码区调高看长文件）
-    return;
-  }
-
-  if (tier === 'mid') {
-    root.removeProperty('--result-w');   // 结果区独占一行，横向宽度不归用户管
+  } else if (tier === 'mid') {
+    root.removeProperty('--result-w');
   } else if (typeof state.layout.result === 'number') {
     applyPanelWidth('result', state.layout.result);
   }
-
-  if (typeof state.layout.sidebar === 'number') {
+  if (tier !== 'narrow' && typeof state.layout.sidebar === 'number') {
     applyPanelWidth('sidebar', state.layout.sidebar);
   }
+
+  // ---- 高度类 ----
   if (typeof state.layout.analysis === 'number') {
     applyAnalysisHeight(state.layout.analysis);
   }
