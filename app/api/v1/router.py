@@ -1,11 +1,18 @@
-"""API v1 路由聚合：后续模块（PR 草稿）在此挂载子路由。"""
+"""API v1 路由聚合：所有业务模块在这里挂载。
+
+本文件是"模块整合是否完整"的唯一入口——改这里就能看出后端对外提供什么，
+`app/main.py` 只 include 本文件一次。
+
+**当前只有学生端（AI 代码导师）的模块。**
+原先还挂着 repositories / search / agent / sandbox 四个「开源贡献端」模块
+（仓库解析、混合检索、测试生成与自动修复、Docker 沙箱），已随该功能删除。
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
-    agent,
     auth,
     check,
     comment,
@@ -14,21 +21,13 @@ from app.api.v1.endpoints import (
     health,
     library,
     models,
-    repositories,
-    sandbox,
-    search,
     tutor,
 )
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
-api_router.include_router(
-    repositories.router, prefix="/repositories", tags=["repositories"]
-)
-api_router.include_router(search.router, prefix="/search", tags=["retrieval"])
-api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
-api_router.include_router(sandbox.router, prefix="/sandbox", tags=["sandbox"])
 # AI 代码导师：面向前端「学生代码学习」页面
+# （检测 / 注释 / 改错 / 诊断（错题本 + 举一反三）+ 历史记录）
 api_router.include_router(tutor.router, prefix="/tutor", tags=["tutor"])
 # 本地项目库：原地扫描并按语言分类（只读，不移动文件）
 api_router.include_router(library.router, prefix="/library", tags=["library"])

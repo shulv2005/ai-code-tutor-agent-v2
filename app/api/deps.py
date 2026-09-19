@@ -1,16 +1,23 @@
-"""FastAPI 依赖注入：数据库会话、全局配置与领域服务。"""
+"""FastAPI 依赖注入：数据库会话、全局配置与领域服务。
+
+这里只保留学生端（AI 代码导师）需要的依赖。
+原先还有 `RepoServiceDep` / `RetrievalServiceDep` / `SandboxRunnerDep` /
+`TestAgentDep` / `FixAgentDep` / `AutoFixPlannerDep` 六个，属于「开源贡献端」，
+已随该功能删除。
+
+**删它们顺带解决了一个隐蔽的耦合**：`DbSession` 也定义在本文件里，
+只要本文件还 import 检索/沙箱，那么**每一个**学生端接口
+（哪怕只是读一次错题本）都会在导入时把 faiss、docker 这些重依赖拉进来。
+依赖注入的"聚合文件"很容易变成这种隐形桥梁。
+"""
 
 from __future__ import annotations
 
-import threading
 from typing import Annotated
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.fix_agent import FixAgent
-from app.agents.planner import AutoFixPlanner
-from app.agents.test_agent import TestAgent
 from app.agents.tutor_agent import TutorAgent
 from app.core.api_key_manager import ApiKeyManager
 from app.core.api_key_manager import get_api_key_manager as _get_api_key_manager
@@ -22,9 +29,6 @@ from app.services.code_fixer import CodeFixer
 from app.services.comment_generator import CommentGenerator
 from app.services.file_classifier import FileClassifier
 from app.services.library_service import LibraryService
-from app.services.repo.service import RepositoryService
-from app.services.retrieval.service import RetrievalService
-from app.services.sandbox import SandboxRunner, get_sandbox_runner
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AppSettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -44,86 +48,10 @@ def get_api_key_manager() -> ApiKeyManager:
 ApiKeyManagerDep = Annotated[ApiKeyManager, Depends(get_api_key_manager)]
 
 
-def get_repository_service(settings: AppSettingsDep) -> RepositoryService:
-    """仓库解析服务（无状态，可直接按请求构造）。"""
-    return RepositoryService(settings)
-
-
-RepoServiceDep = Annotated[RepositoryService, Depends(get_repository_service)]
-
-# 检索服务必须进程内单例：它持有内存索引缓存与嵌入模型句柄，
-# 按请求重建会导致每次检索都重新加载 ONNX 模型与 FAISS 索引。
-_retrieval_service: RetrievalService | None = None
-_retrieval_lock = threading.Lock()
-
-
-def get_retrieval_service(settings: AppSettingsDep) -> RetrievalService:
-    """检索服务（进程内单例）。"""
-    global _retrieval_service
-    if _retrieval_service is None:
-        with _retrieval_lock:
-            if _retrieval_service is None:
-                _retrieval_service = RetrievalService(settings)
-    return _retrieval_service
-
-
-def reset_retrieval_service() -> None:
-    """清空单例（测试或多环境切换时使用）。"""
-    global _retrieval_service
-    with _retrieval_lock:
-        _retrieval_service = None
-
-
-RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]
-
-
-def get_test_agent(settings: AppSettingsDep) -> TestAgent:
-    """测试生成 Agent。
-
-    LLM 客户端走进程内单例（httpx 连接池复用）；测试可用
-    `app.dependency_overrides[get_test_agent]` 注入假 LLM。
-    """
-    return TestAgent(settings, get_llm_client())
-
-
-TestAgentDep = Annotated[TestAgent, Depends(get_test_agent)]
-
-
-def get_sandbox(settings: AppSettingsDep) -> SandboxRunner:
-    """沙箱执行后端（auto 模式下每次按 Docker 可用性选择）。"""
-    return get_sandbox_runner(settings.docker)
-
-
-SandboxRunnerDep = Annotated[SandboxRunner, Depends(get_sandbox)]
-
-
-def get_fix_agent(settings: AppSettingsDep) -> FixAgent:
-    """修复 Agent。"""
-    return FixAgent(settings, get_llm_client())
-
-
-FixAgentDep = Annotated[FixAgent, Depends(get_fix_agent)]
-
-
-def get_autofix_planner(
-    settings: AppSettingsDep,
-    test_agent: TestAgentDep,
-    fix_agent: FixAgentDep,
-    sandbox: SandboxRunnerDep,
-) -> AutoFixPlanner:
-    """自动修复编排器（组装 Test Agent / Fix Agent / Sandbox）。"""
-    return AutoFixPlanner(
-        settings, test_agent=test_agent, fix_agent=fix_agent, sandbox=sandbox
-    )
-
-
-AutoFixPlannerDep = Annotated[AutoFixPlanner, Depends(get_autofix_planner)]
-
-
 def get_tutor_agent(settings: AppSettingsDep) -> TutorAgent:
-    """AI 代码导师 Agent（检测 / 注释 / 改错）。
+    """AI 代码导师 Agent（检测 / 注释 / 改错 / 诊断）。
 
-    与其它 Agent 共用同一个进程级 LLM 客户端；
+    与其它几个 AI 服务共用同一个进程级 LLM 客户端（httpx 连接池复用）；
     测试可用 `app.dependency_overrides[get_tutor_agent]` 注入假客户端。
     """
     return TutorAgent(settings, get_llm_client())
@@ -197,32 +125,18 @@ CommentGeneratorDep = Annotated[CommentGenerator, Depends(get_comment_generator)
 __all__ = [
     "ApiKeyManagerDep",
     "AppSettingsDep",
-    "AutoFixPlannerDep",
     "CodeCheckerDep",
     "CodeFixerDep",
     "CommentGeneratorDep",
     "DbSession",
     "FileClassifierDep",
-    "FixAgentDep",
     "LibraryServiceDep",
-    "RepoServiceDep",
-    "RetrievalServiceDep",
-    "SandboxRunnerDep",
-    "TestAgentDep",
     "TutorAgentDep",
-    "get_autofix_planner",
     "get_api_key_manager",
     "get_code_checker",
     "get_code_fixer",
     "get_comment_generator",
     "get_file_classifier",
-    "get_fix_agent",
     "get_library",
-    "get_repository_service",
-    "get_retrieval_service",
-    "get_sandbox",
-    "get_test_agent",
     "get_tutor_agent",
-    "reset_retrieval_service",
 ]
-

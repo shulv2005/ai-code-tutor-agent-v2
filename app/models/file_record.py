@@ -17,7 +17,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.repository import utc_now
+from app.models.base import utc_now
 
 
 class ClassifiedFileRecord(Base):

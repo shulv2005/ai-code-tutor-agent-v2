@@ -1,27 +1,21 @@
-"""测试公共夹具：隔离数据库路径与 Trace Sink，避免用例间互相污染。"""
+"""测试公共夹具：隔离数据库/数据目录与 Trace Sink，避免用例间互相污染。
+
+本文件只保留「AI 代码导师（学生端）」需要的夹具。原先还有一整套服务于
+「开源贡献端」的夹具（sample_repo 造本地 git 仓库、offline_clone 把 URL
+解析替换成本地路径、repo_workspace、retrieval_env 配 hashing 嵌入…），
+已随该功能删除。**连带的好处是测试不再需要 GitPython**。
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
 
-import git
 import pytest
 
-from app.api.deps import reset_retrieval_service
 from app.core.config import Settings, get_settings
 from app.core.llm_client import LLMMessage, LLMResponse, LLMUsage, set_llm_client
 from app.core.trace import MemoryTraceSink, TraceRecorder, set_trace_recorder
-from app.services.repo.git_service import RepoRef
-from app.services.retrieval.embedder import reset_shared_embedders
-from app.services.retrieval.tokenizer import clear_cache as clear_token_cache
-
-# e2e_test.py 是命令行脚本（文件名匹配 pytest 的 *_test.py 收集规则），
-# 它需要网络与 LLM，且顶层会做进程级配置，不能让 pytest 收集。
-# 用 collect_ignore 显式排除；其可测部分由 tests/test_e2e_pipeline.py 覆盖。
-# 注意：pytest 要求 collect_ignore 定义在模块顶层，但放在 import 之后
-# 会触发 E402（模块导入不在文件顶部），因此这里置于全部 import 之下。
-collect_ignore = ["e2e_test.py"]
 
 # ---------------------------------------------------------------------------
 # 样例源码：覆盖 Python（常规/异步/嵌套/语法错误）、JS（导出/箭头函数/类）、Go
@@ -111,8 +105,13 @@ def memory_recorder() -> Iterator[tuple[TraceRecorder, MemoryTraceSink]]:
 
 
 @pytest.fixture()
-def sample_repo(tmp_path: Path) -> Path:
-    """构造一个真实的本地 git 仓库，让克隆测试完全不依赖网络。"""
+def sample_tree(tmp_path: Path) -> Path:
+    """造一棵**纯文件系统**的样例代码树，供解析器的遍历测试使用。
+
+    刻意不建 git 仓库：需要 git 的只有"克隆远程仓库"那条链路，
+    它属于已删除的开源贡献端。解析器只关心"目录里有哪些源码文件"，
+    用普通目录就够，测试也因此不再依赖 GitPython。
+    """
     root = tmp_path / "sample_src"
     (root / "pkg").mkdir(parents=True)
     (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
@@ -124,68 +123,7 @@ def sample_repo(tmp_path: Path) -> Path:
     (root / "README.md").write_text("# sample\n", encoding="utf-8")
     (root / "node_modules").mkdir()
     (root / "node_modules" / "dep.js").write_text("function dep() {}\n", encoding="utf-8")
-
-    repo = git.Repo.init(root, initial_branch="main")
-    repo.index.add(
-        ["pkg/__init__.py", "pkg/core.py", "pkg/broken.py", "web.js", "main.go", "README.md"]
-    )
-    actor = git.Actor("Tester", "tester@example.com")
-    repo.index.commit("initial commit", author=actor, committer=actor)
     return root
-
-
-@pytest.fixture()
-def repo_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """把克隆工作区指向临时目录。"""
-    workspace = tmp_path / "repos"
-    monkeypatch.setenv("REPOSITORY__WORKSPACE_DIR", str(workspace))
-    get_settings.cache_clear()
-    yield workspace
-    get_settings.cache_clear()
-
-
-@pytest.fixture()
-def offline_clone(monkeypatch: pytest.MonkeyPatch, sample_repo: Path) -> None:
-    """把 URL 解析替换为指向本地样例仓库，使 API 全链路测试离线可跑。
-
-    GitPython 支持从本地路径克隆，因此除了 URL 校验被绕过，克隆/解析/落库
-    走的都是真实代码路径。
-    """
-
-    def fake_parse(url: str, allowed_hosts: object) -> RepoRef:
-        name = url.rstrip("/").split("/")[-1].removesuffix(".git") or "sample"
-        return RepoRef(
-            host="github.com",
-            owner="local",
-            name=name,
-            clone_url=str(sample_repo),
-            sanitized_url=f"https://github.com/local/{name}.git",
-        )
-
-    monkeypatch.setattr("app.services.repo.service.parse_repo_url", fake_parse)
-
-
-@pytest.fixture()
-def retrieval_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """把检索索引指向临时目录，并强制使用 hashing 嵌入。
-
-    hashing 后端零依赖、确定性、无需下载模型，使检索链路测试可以完全离线、
-    快速、可重复地跑；语义质量由单独的 fastembed 用例覆盖。
-    """
-    index_dir = tmp_path / "index"
-    monkeypatch.setenv("RETRIEVAL__INDEX_DIR", str(index_dir))
-    monkeypatch.setenv("RETRIEVAL__EMBEDDER", "hashing")
-    monkeypatch.setenv("RETRIEVAL__EMBEDDING_DIM", "256")
-    get_settings.cache_clear()
-    # 检索服务是进程内单例且缓存了配置与索引，必须逐个用例重置
-    reset_retrieval_service()
-    reset_shared_embedders()
-    clear_token_cache()
-    yield index_dir
-    get_settings.cache_clear()
-    reset_retrieval_service()
-    reset_shared_embedders()
-    clear_token_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -194,21 +132,14 @@ def _isolate_runtime_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
 
     为什么必须这么做：这些配置的默认值都指向仓库里的 `data/`，
     凡是忘了显式覆盖的测试都会读写它。后果有两层：
-    1. 污染开发者的工作目录（跑一次测试就多出一堆索引、克隆、数据库文件）；
+    1. 污染开发者的工作目录（跑一次测试就多出一堆数据库文件）；
     2. **更隐蔽的是让测试之间通过共享状态互相影响**，且失败原因与代码无关：
-       - 残留的 `data/index/repo_1` 会让「未建索引应返回 409」断言失败；
-       - 残留的 `data/app.db` 里若有同 URL 的历史仓库记录，
-         `register_and_index` 会命中缓存直接返回，后续 `reindex` 因
-         `local_path` 已失效而返回 409。
+       残留的 `data/app.db` 里若有历史记录，用例断言的"总数为 N"就会莫名其妙地不对。
 
-    显式覆盖这些变量的夹具（sqlite_path / repo_workspace / retrieval_env 等）
-    在本夹具之后执行，仍然生效。
+    显式覆盖这些变量的夹具（sqlite_path 等）在本夹具之后执行，仍然生效。
     """
     monkeypatch.setenv("DATABASE__SQLITE_PATH", str(tmp_path / "_data" / "app.db"))
-    monkeypatch.setenv("RETRIEVAL__INDEX_DIR", str(tmp_path / "_data" / "index"))
-    monkeypatch.setenv("REPOSITORY__WORKSPACE_DIR", str(tmp_path / "_data" / "repos"))
-    monkeypatch.setenv("DOCKER__WORKSPACE_DIR", str(tmp_path / "_data" / "workspaces"))
-    # 本地项目库同理：默认根目录是仓库里的 data/library，
+    # 本地项目库：默认根目录是仓库里的 data/library，
     # 不隔离的话「扫描到 0 个文件」这类断言会随开发者本地放了什么代码而变化。
     monkeypatch.setenv("LIBRARY__ROOTS", str(tmp_path / "_data" / "library"))
     # 文件分类器**会真的移动文件**，默认根目录与项目库同为仓库里的 data/library/。
@@ -324,10 +255,9 @@ def fake_llm() -> FakeLLMClient:
 
 @pytest.fixture()
 def llm_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """把沙箱工作区指向临时目录，并注入假 LLM 客户端。"""
-    workspace = tmp_path / "workspaces"
-    monkeypatch.setenv("DOCKER__WORKSPACE_DIR", str(workspace))
+    """注入假 LLM 客户端，并清空配置缓存。"""
+    monkeypatch.setenv("APP__LOG_LEVEL", "WARNING")
     get_settings.cache_clear()
-    yield workspace
+    yield tmp_path
     set_llm_client(None)
     get_settings.cache_clear()

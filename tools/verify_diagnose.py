@@ -36,7 +36,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 PORT = 8316
 BASE = f"http://127.0.0.1:{PORT}"
 
-# 学生标识：验收脚本用固定学号，方便断言"错题本按学号隔离"
+# 身份标识：验收脚本用显式标识，方便断言"错题本确实按标识隔离"。
+# 页面上没有学号输入框（单机版），但接口仍可选接受身份参数——
+# 这条路径是给"一个脚本批量跑一个班"用的，顺手在这里验证它没坏。
 STUDENT_A = "verify-A-2024001"
 STUDENT_B = "verify-B-2024002"
 
@@ -184,11 +186,12 @@ def main() -> int:
         # ---------------- 3. 参数校验（不需要模型） ----------------
         print()
         print("=" * 72)
-        print("3. 参数校验：学号 / 语言 / 空代码")
+        print("3. 参数校验：身份 / 语言 / 空代码")
         print("=" * 72)
         code, body = request("GET", "/api/v1/tutor/errors")
-        record("不传学号查错题本 → 400（而不是把全班错题混在一起返回）",
-               code == 400, f"HTTP {code}")
+        record("不传任何身份查错题本 → 200 且归到固定身份 local（页面不填学号）",
+               code == 200 and isinstance(body, dict) and body.get("student_id") == "local",
+               f"HTTP {code} student_id={body.get('student_id') if isinstance(body, dict) else '?'}")
 
         code, body = post_json("/api/analyze", {
             "student_id": STUDENT_A, "language": "rust", "code_content": BROKEN_PY,
@@ -281,11 +284,11 @@ def main() -> int:
                            len(book_body.get("weak_points") or []) >= 1,
                            str(book_body.get("weak_points"))[:80])
 
-                # ---- 学号隔离：另一个学号看不到 A 的错题 ----
+                # ---- 身份隔离（可选能力）：另一个标识看不到 A 的错题 ----
                 code, other = request(
                     "GET", f"/api/v1/tutor/errors?student_id={STUDENT_B}")
                 assert isinstance(other, dict), other
-                record("换个学号查 → 看不到别人的错题（错题本按学号隔离）",
+                record("换个身份标识查 → 看不到别人的错题（接口仍支持按人归档）",
                        other.get("total") == 0, f"B total={other.get('total')}")
 
                 # ---- 删别人的错题必须失败 ----
@@ -293,7 +296,7 @@ def main() -> int:
                     code, _ = request(
                         "DELETE", f"/api/v1/tutor/errors/{items[0]['id']}"
                                   f"?student_id={STUDENT_B}")
-                    record("拿别人的学号删这条错题 → 404（删不掉）",
+                    record("拿别人的身份标识删这条错题 → 404（删不掉）",
                            code == 404, f"HTTP {code}")
 
                 # ---------------- 5. 第二次诊断：历史错题要进提示词 ----------------

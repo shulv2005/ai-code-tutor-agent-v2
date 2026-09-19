@@ -23,7 +23,7 @@ from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.repository import utc_now
+from app.models.base import utc_now
 
 
 class StudentErrorLog(Base):

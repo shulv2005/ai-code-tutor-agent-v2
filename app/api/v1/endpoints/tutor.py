@@ -15,15 +15,16 @@
   能演示文件上传、语言分类、代码结构展示；几个 AI 按钮会给出明确提示。
 - 几个 AI 接口的结果都会写入历史记录（流水账），供课堂回顾。
 - `/diagnose` 额外做两件事（见该函数的 docstring）：
-    1. 调用前先按学号捞出**最近的历史错题**，拼进提示词；
+    1. 调用前先捞出**最近的历史错题**，拼进提示词；
     2. 判定有错时把这次错误写进**错题本**（student_error_logs）。
 - **模型可以在页面上选**：AI 接口都接受可选的表单字段
   `model_id`（用哪个模型）与 `api_key`（用户自己填的 Key），
   另外认 `X-Session-Id` 请求头（Key 存在服务端内存会话里的时候用）。
   一个都不传时，就用后端 `.env` 里配好的默认模型——保证老用法完全不受影响。
-- **学生身份**：错题本按学号归档，前端通过 `X-Student-Id` 请求头
-  （或同名表单字段）传学号进来。没有学号就无法归档，接口会直接 400——
-  这比默默存成 "anonymous" 然后让整个班的错题混在一起要好得多。
+- **学生身份**：本项目是单机版（自己电脑上跑），错题本不需要区分人，
+  所有记录统一归档到固定身份 `local`（见 `LOCAL_STUDENT_ID`）。
+  接口仍然可选接受 `X-Student-Id` 请求头或 `student_id` 字段——
+  脚本按需求文档的 JSON 契约批量跑一个班时，传了就能按人分开记。
 """
 
 from __future__ import annotations
@@ -95,13 +96,21 @@ router = APIRouter()
 # 单次上传的代码大小上限：学生作业不会很大，超过基本是误传了文件
 MAX_CODE_BYTES = 512 * 1024
 
-# 学生身份的请求头名。用请求头而不是每个表单都带一个字段：
-# 和 X-Session-Id 一样的理由——它是"这次请求属于谁"的上下文，不属于业务参数。
-STUDENT_HEADER = "X-Student-Id"
+# 学生身份相关的两个常量。
+#
+# **页面不再要求填学号**：本项目是"在自己电脑上跑"的单机版，
+# 一个浏览器就一个学生，错题本不需要区分人。因此所有记录都归档到
+# `LOCAL_STUDENT_ID` 这个固定身份下。
+#
+# 为什么**保留**数据库的 student_id 列与这个可选参数、而不是把列删掉：
+#   · 列留着，"以后要支持多个学生"只需要加回一个输入框，不用改表、不用写迁移；
+#   · HTTP 参数留着，需求文档里的 `POST /api/analyze` JSON 契约
+#     （`{student_id, language, code_content}`）就仍然成立，
+#     脚本/第三方传了学号也能正常按人分开归档。
+LOCAL_STUDENT_ID = "local"
 
-# 学号长度上限。截断而不是报错：宁可存一个被截断的学号，
-# 也不要因为多打了一个空格/换行就让整个诊断失败。
-MAX_STUDENT_ID_LEN = 64
+# 仍然接受这个请求头（可选）：传了就按传的归档，不传就是本地身份。
+STUDENT_HEADER = "X-Student-Id"
 
 # 每次诊断喂给模型的历史错题条数（需求指定 5-10 条）。
 # 取 8 是因为：少于 5 条总结不出规律，多于 10 条既费 token 又会让
@@ -128,23 +137,22 @@ def _resolve_language(filename: str) -> str:
 
 
 def _resolve_student_id(*candidates: str | None) -> str:
-    """从若干候选值里挑出学号（表单字段优先，其次请求头）。
+    """决定这次记录归到谁名下。
 
-    没有学号时抛 400 而不是兜底成 "anonymous"：如果默默归档到一个公共学号，
-    一个班的学生就会共用同一个错题本，"针对薄弱点出题"立刻变成一句空话，
-    而且这种错误**不会报错、只会静默出错**——最难排查的那一类。
+    单机版页面上没有"学号"这个输入框，所以正常情况下所有候选都是空的，
+    返回固定身份 `local`。
+
+    但仍然保留候选参数：`POST /api/analyze` 这个兼容别名按需求文档的契约
+    可以带 `student_id`，脚本批量给一个班跑的时候传进来就能按人分开归档——
+    功能是免费保留的（表里本来就有这一列），只是页面上不再要求。
     """
     for value in candidates:
         text = (value or "").strip()
         if text:
-            return text[:MAX_STUDENT_ID_LEN]
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            "缺少学号：请在页面左侧「我的学号」里填写，"
-            f"或通过 {STUDENT_HEADER} 请求头传入。错题本需要按学号归档。"
-        ),
-    )
+            # 截断而不是报错：宁可存一个被截断的标识，
+            # 也不要因为多打了一个空格/换行就让整个诊断失败。
+            return text[:64]
+    return LOCAL_STUDENT_ID
 
 
 def _analyze(filename: str, code: str) -> AnalyzeResponse:
@@ -571,8 +579,9 @@ async def fix_code(
         "与 `/check` 的区别：`/check` 是「给这份代码打个分、列问题」，"
         "无状态、每次结果只跟代码有关；`/diagnose` 是「结合你以前的错题，"
         "看看你这次又错在哪、该补哪个知识点」，是**有状态**的——"
-        "它会把该学生最近的历史错题一起喂给模型，并在判定有错时归档进错题本。\n\n"
-        "因此它需要学号（`X-Student-Id` 请求头或 `student_id` 表单字段）。"
+        "它会把最近的历史错题一起喂给模型，并在判定有错时归档进错题本。\n\n"
+        "单机版不需要传身份：不传 `student_id` / `X-Student-Id` 时"
+        "统一归档到固定身份 `local`。"
     ),
 )
 async def diagnose_code(
@@ -583,7 +592,9 @@ async def diagnose_code(
     file: UploadFile | None = File(default=None),
     code: str | None = Form(default=None),
     filename: str | None = Form(default=None),
-    student_id: str | None = Form(default=None, description="学号；也可走 X-Student-Id 头"),
+    student_id: str | None = Form(
+        default=None, description="可选身份标识；不传就是本机固定身份 local"
+    ),
     model_id: str | None = Form(default=None, description="用哪个模型（页面下拉框选的）"),
     api_key: str | None = Form(default=None, description="用户自己填的 API Key（可空）"),
     x_session_id: str | None = Header(default=None, alias=SESSION_HEADER),
@@ -607,7 +618,7 @@ async def diagnose_code(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="无法识别代码语言，请使用 .c / .java / .py 等受支持的扩展名。",
         )
-    # 学号：表单字段优先，其次请求头（前端统一走请求头，见 js 的 api()）
+    # 身份：页面不传 → 落到本机固定身份 local；脚本传了 → 按传的归档
     sid = _resolve_student_id(student_id, x_student_id)
 
     # ---- 1. 查历史错题（本次调用要用它，所以必须在调模型之前）----
@@ -680,7 +691,9 @@ async def diagnose_code(
         if saved is not None:
             logged = True
             error_log_id = saved.id
-            logger.info("已记入错题本：student=%s id=%s kp=%s", sid, saved.id, saved.knowledge_point)
+            logger.info(
+                "已记入错题本：student=%s id=%s kp=%s", sid, saved.id, saved.knowledge_point
+            )
 
     # ---- 6. 错题本统计：在写库**之后**再查，让返回值与前端刷新后看到的一致 ----
     # 若在写库前查，前端会同时拿到"共 5 条"（响应）和"共 6 条"（列表接口），
@@ -701,7 +714,9 @@ async def diagnose_code(
         ),
         history_count=len(history),
         history_total=total,
-        weak_points=[KnowledgePointStat(knowledge_point=name_, count=count) for name_, count in weak],
+        weak_points=[
+            KnowledgePointStat(knowledge_point=point, count=count) for point, count in weak
+        ],
         logged=logged,
         error_log_id=error_log_id,
         model=result.model,
@@ -720,16 +735,18 @@ async def diagnose_code(
     response_model=ErrorLogListResponse,
     summary="错题本列表 + 易错知识点聚合",
     description=(
-        "按学号列出历史错题与易错知识点 Top N。"
-        "前端下半屏在页面加载时调它，把上次的诊断结果先摆出来，"
-        "学生不用每次重新点一遍诊断才能看到自己的错题本。"
+        "列出历史错题与易错知识点 Top N。\n\n"
+        "单机版页面上没有学号输入框，所以前端调用时不带任何身份参数，"
+        "后端会按固定的 `local` 身份返回这一台机器上的全部错题。"
     ),
 )
 async def list_errors(
     session: DbSession,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    student_id: str | None = Query(default=None, description="学号；也可走 X-Student-Id 头"),
+    student_id: str | None = Query(
+        default=None, description="可选身份标识；不传就是本机固定身份 local"
+    ),
     x_student_id: str | None = Header(default=None, alias=STUDENT_HEADER),
 ) -> ErrorLogListResponse:
     sid = _resolve_student_id(student_id, x_student_id)
@@ -749,7 +766,10 @@ async def list_errors(
     "/errors/{error_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="删除一条错题",
-    description="只允许删除**自己**的错题：学号会作为过滤条件一起查，删别人的会返回 404。",
+    description=(
+        "只允许删除**本机身份**下的错题：身份标识会作为过滤条件一起查，"
+        "脚本按人归档时删别人的会返回 404。"
+    ),
 )
 async def delete_error(
     error_id: int,

@@ -23,11 +23,7 @@ from app.main import FRONTEND_PAGES, create_app, frontend_page_urls
 # 期望的模块标签 -> 最少接口数（只写下限，以后加接口不用改）
 EXPECTED_MODULES = {
     "health": 2,
-    "repositories": 7,
-    "retrieval": 1,
-    "agent": 3,
-    "sandbox": 2,
-    "tutor": 8,
+    "tutor": 11,
     "library": 3,
     "files": 2,
     "check": 1,
@@ -38,16 +34,17 @@ EXPECTED_MODULES = {
     "models": 1,
 }
 
-# 每个功能模块的落库表
+# 每个功能模块的落库表（全部属于学生端）
 EXPECTED_TABLES = {
-    "repositories",
-    "code_files",
-    "code_symbols",
+    # 学习流水账 + 错题本
     "tutor_records",
-    "classified_files",
+    "student_error_logs",
+    # 三个学习功能的历史
     "code_check_records",
     "code_fix_records",
     "comment_records",
+    # 文件自动分类台账
+    "classified_files",
 }
 
 
@@ -71,7 +68,7 @@ def _module_counts(spec: dict) -> dict[str, int]:
 # 1. 模块整合
 # ===========================================================================
 def test_all_modules_are_registered(spec: dict) -> None:
-    """13 个模块必须全部挂上——少一个不会报错，只会在访问时 404。"""
+    """9 个模块必须全部挂上——少一个不会报错，只会在访问时 404。"""
     counts = _module_counts(spec)
     missing = {
         tag: counts.get(tag, 0)

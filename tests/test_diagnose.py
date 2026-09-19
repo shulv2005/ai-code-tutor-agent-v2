@@ -536,15 +536,20 @@ def test_diagnose_isolates_students(sqlite_path: Path, diagnose_app) -> None:
     assert all(item["student_id"] == "ALICE" for item in alice["items"])
 
 
-def test_diagnose_requires_student_id(sqlite_path: Path, diagnose_app) -> None:
-    """没学号就明确报错，不要静默兜底成公共错题本。"""
+def test_diagnose_without_identity_falls_back_to_local(sqlite_path: Path, diagnose_app) -> None:
+    """不传任何身份 → 归到本机固定身份 local（页面不需要填学号）。"""
     app, _ = diagnose_app
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/tutor/diagnose", data={"code": PY_CODE, "filename": "demo.py"}
         )
-    assert response.status_code == 400
-    assert "学号" in response.json()["detail"]
+        errors = client.get("/api/v1/tutor/errors").json()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["student_id"] == "local"
+    # 不带身份也要能查回自己的错题本
+    assert errors["student_id"] == "local"
+    assert errors["total"] == 1
 
 
 def test_diagnose_rejects_unknown_language(sqlite_path: Path, diagnose_app) -> None:
@@ -582,10 +587,16 @@ def test_diagnose_records_history_entry(sqlite_path: Path, diagnose_app) -> None
     assert history["items"][0]["summary"]
 
 
-def test_error_book_requires_student_id(sqlite_path: Path, diagnose_app) -> None:
+def test_error_book_works_without_identity(sqlite_path: Path, diagnose_app) -> None:
+    """错题本接口不带任何身份参数也能用（单机版页面上没有学号输入框）。"""
     app, _ = diagnose_app
     with TestClient(app) as client:
-        assert client.get("/api/v1/tutor/errors").status_code == 400
+        response = client.get("/api/v1/tutor/errors")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "student_id": "local", "total": 0, "items": [], "weak_points": [],
+    }
 
 
 def test_delete_error_endpoint_scoped_by_student(sqlite_path: Path, diagnose_app) -> None:

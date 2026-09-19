@@ -3,7 +3,8 @@
 ===========================================================================
 这个服务整合了哪些东西
 ===========================================================================
-一、面向学生的「AI 代码导师」模块（都不需要 Docker）
+「AI 代码导师」学生端（都不需要 Docker）：
+
     /api/v1/tutor      检测 / 生成注释 / 自动改错 / **诊断（错题本 + 举一反三）**
                        + 错题本查询 + 学习历史（前端按钮用的轻量版）
                        POST /diagnose 会结合该学生的历史错题出题，并把错误归档
@@ -16,7 +17,6 @@
     /api/v1/check      AI 自动检测：本地语法检查（AST / Tree-sitter）+ AI 深度检测
     /api/v1/fix        AI 代码改错：本地分析 → AI 修正 → 本地复检（四问式讲解）
     /api/v1/comment    AI 注释生成：文件级 / 函数级 / 行内三层注释 + 代码未改动复检
-
     /api/v1/models     可选模型清单（网页「模型设置」下拉框的数据源，**不含任何 Key**）
     /api/v1/auth       网页填的 API Key 的临时保管：set_key / clear_key / status
                        —— Key 只存进程内存，30 分钟不用自动清除，不落库、不进日志
@@ -25,14 +25,13 @@
     或带 X-Session-Id 请求头（Key 存在内存会话里时用这个），
     就会用**用户自己选的模型 + 他自己的 Key**；都不带则回落到 .env 配置。
 
-二、面向开源贡献的完整链路（Step 1-8）
-    /api/v1/repositories  克隆 + 解析代码结构
-    /api/v1/search        BM25 + FAISS + RRF 混合检索
-    /api/v1/agent         生成 pytest 测试 / 一键自动修复
-    /api/v1/sandbox       沙箱执行测试并采集覆盖率
+    原先这里还有「开源贡献端」的一整套（仓库解析 / BM25+FAISS 混合检索 /
+    测试生成 / Docker 沙箱 / 自动修复 / PR 草稿），已按需求整体删除。
+    删除收益：依赖从 GitPython + tree-sitter + faiss + fastembed + docker
+    减到只剩解析与 AI 调用，start.bat 首次安装快了一个量级。
 
 三、网页界面（frontend/ 目录，挂载在 /ui）
-    /ui/index.html      学生端：拖入/粘贴代码、跑 AI 功能、看历史、拖分隔条调布局
+    /ui/index.html      学生端：拖入/粘贴代码、跑 AI 功能、看错题本、拖分隔条调布局
 
 ===========================================================================
 create_app 工厂的组装顺序（改这里时请保持顺序）
@@ -41,6 +40,7 @@ create_app 工厂的组装顺序（改这里时请保持顺序）
 2. Trace 中间件   —— 给每个请求分配 trace_id，日志与响应头都能对上
 3. CORS           —— 开发期放开本地端口，便于前后端分离调试
 4. 版本化路由     —— 只 include 一次 api_router，各模块挂载见 app/api/v1/router.py
+4.5 兼容别名      —— /api/analyze（需求文档指定的路径）
 5. 前端静态页面   —— /ui 挂 frontend/，根路径 307 跳到学生端
 6. 兜底异常处理   —— 未捕获异常也返回 trace_id，便于定位
 
@@ -180,9 +180,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app.name,
         version=settings.app.version,
         description=(
-            "AI 代码导师与开源协作智能体后端服务。\n\n"
-            "- **学生端**：代码文件自动分类、AI 检测、AI 改错、AI 注释生成\n"
-            "- **开源协作**：仓库解析、混合检索、测试生成、沙箱执行、自动修复\n\n"
+            "AI 代码导师（学生端）后端服务。\n\n"
+            "- **代码学习**：文件自动分类、本地结构分析、AI 检测、AI 改错、AI 注释生成\n"
+            "- **错题本 & 举一反三**：诊断时结合历史错题出题，并把错误按知识点归档\n\n"
             "网页入口：`/ui/index.html`（学生端）"
         ),
         debug=settings.app.debug,

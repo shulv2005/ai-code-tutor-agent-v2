@@ -276,31 +276,40 @@ def main() -> int:
         report("JS 里有 hasCode 状态变量", "hasCode" in js)
         report("JS 用 classList 控制显隐（不直接改 display）",
                "classList.toggle('hidden'" in js)
-        report("三个 AI 按钮在没有代码时禁用（可点条件含 hasCode）",
-               "state.aiAvailable && state.hasCode" in js)
-        report("三个拖拽区都绑定了处理器",
+        # 这条断言原先找的是 `state.aiAvailable && state.hasCode`——那个写法
+        # 从**第一个提交**起就已经不存在了（setBusy 后来改用 aiReady() 收口），
+        # 也就是说它一直在报假失败。这里改成检查真正的不变量：
+        # 「可点条件里含 hasCode」+「四个按钮都由同一个 clickable 变量驱动」。
+        four_buttons_share_condition = all(
+            f"el.{name}.disabled = !clickable" in js
+            for name in ("btnCheck", "btnComment", "btnFix", "btnDiagnose")
+        )
+        report("四个 AI 按钮在没有代码时禁用（可点条件含 hasCode）",
+               "&& state.hasCode" in js and four_buttons_share_condition)
+        report("四个拖拽区都绑定了处理器",
                "bindDropzone()" in js and "bindLibraryDropzone()" in js
                and "bindCodeDropzone()" in js)
         report("清空按钮存在（占位提示会重新出现）",
                'id="clearCodeBtn"' in html and "clearCode" in js)
 
         # ---------------- 静态检查：需求三 / 需求四 的要素 ----------------
-        # 行为本身由 tools/check_frontend_logic.mjs 真跑 app.js 验证（100 项），
+        # 行为本身由 tools/check_frontend_logic.mjs 真跑 app.js 验证（178 项），
         # 这里只确认关键要素都在，两道检查互相补位。
         print()
         print("=" * 72)
         print("场景 7  分隔条与懒加载（需求三 / 需求四）")
         print("=" * 72)
-        report("HTML 里有三根分隔条",
+        # 四根：左侧栏、右侧结果区、代码区高度、右侧面板上下分栏
+        report("HTML 里有四根分隔条",
                all(f'id="{name}"' in html for name in
-                   ("resizerLeft", "resizerRight", "resizerCode")))
+                   ("resizerLeft", "resizerRight", "resizerCode", "resizerResultSplit")))
         # 数 role 之前要先去掉 HTML 注释：注释里也会提到 role="separator"，
         # 直接 count 会把说明文字也算成一根分隔条（这个坑刚踩过）
         html_without_comments = re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
         # 先把计数取出来再用：Python 3.11 的 f-string 表达式里不允许出现反斜杠
         separator_count = html_without_comments.count('role="separator"')
         report("分隔条带 role=separator（可聚焦、可键盘调）",
-               separator_count == 3, f"实际 {separator_count} 根")
+               separator_count == 4, f"实际 {separator_count} 根")
         report("CSS 里有 col-resize / row-resize 鼠标样式",
                "col-resize" in css and "row-resize" in css)
         report("CSS 用 CSS 变量做栅格（拖动只改一个变量）",

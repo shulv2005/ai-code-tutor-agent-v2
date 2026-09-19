@@ -8,7 +8,7 @@
 
 | 路径 | 提交方式 | 给谁用 |
 | --- | --- | --- |
-| `POST /api/v1/tutor/diagnose` | multipart 表单 | **本项目的学生端页面**（与 /check、/fix 写法一致） |
+| `POST /api/v1/tutor/diagnose` | multipart 表单 | **学生端页面**（与 `/check`、`/fix` 写法一致） |
 | `POST /api/analyze` | JSON | 校外脚本、Postman 调试、按需求文档对接的第三方 |
 
 关键设计：别名**不重新实现一遍业务逻辑**，而是直接调用规范接口那个函数。

@@ -162,8 +162,6 @@ function register(id, rect) {
   'modelCard', 'modelSelect', 'modelApiKey', 'toggleKeyVisible', 'modelHint',
   'modelStatus', 'modelStatusText', 'saveModelKey', 'clearModelKey', 'refreshModels',
   'aiBadge', 'langBadge',
-  // 学号（错题本按学号归档）
-  'studentCard', 'studentId', 'studentBadge', 'studentHint',
   'codeTitle', 'codeLangBadge', 'code-placeholder', 'codeDropzone', 'codeBlock',
   'codeContent', 'clearCodeBtn',
   // 在线编辑
@@ -187,7 +185,7 @@ function register(id, rect) {
   'diagnoseKpBox', 'diagnoseKpList', 'diagnoseLogged',
   // 错题本（下半屏）
   'wrongBookCard', 'wrongBookCount', 'refreshWrongBook',
-  'wrongBookEmpty', 'wrongBookBody',
+  'wrongBookEmpty', 'wrongBookBody', 'wrongBookHint',
   'weakPointBox', 'weakPointList',
   'historySummaryBox', 'historySummary',
   'exerciseBox', 'exerciseTitle', 'exerciseDesc', 'exerciseHint',
@@ -392,9 +390,9 @@ const epilogue = `
   cancelPendingHighlight, init,
   // 错题本 + 举一反三（右侧面板上下分栏）
   showResult, clampAnalysisHeight, applyAnalysisHeight,
-  currentStudentId, requireStudentId, renderStudentBadge, bindStudentCard,
   renderMarkdown, renderDiagnose, renderWrongBook, renderWeakPoints,
   renderErrorLogList, resetWrongBook, loadErrorBook, runDiagnose, deleteErrorLog,
+  bindErrorLogActions,
 };
 `;
 vm.runInContext(source + epilogue, context, { filename: 'app.js' });
@@ -1315,7 +1313,7 @@ check('并提示学生重新填 Key',
    ------------------------------------------------------------------------- */
 console.log();
 console.log('='.repeat(72));
-console.log('错题本 + 举一反三  上下分栏 / 学号归档 / Markdown 安全渲染');
+console.log('错题本 + 举一反三  上下分栏 / 单机本地归档 / Markdown 安全渲染');
 console.log('='.repeat(72));
 
 api.bindResizers();
@@ -1349,32 +1347,19 @@ fire(el.resizerResultSplit, 'pointerup', { pointerId: 22 });
 check('一路往上拖 → 上半屏停在最小高度 120px（不会被拖没）',
   flooredSplit === 120, String(flooredSplit));
 
-// ---- 3. 学号 ----
-check('一开始没填学号：currentStudentId() 是空串', api.currentStudentId() === '');
-check('没填学号时 requireStudentId() 返回 false（拦住不发请求）',
-  api.requireStudentId() === false);
-check('没填学号时提示里说清了原因（不是默默什么都不做）',
-  el.toast.textContent.includes('学号'), el.toast.textContent);
-check('没填学号时光标自动跳到输入框', el.studentId._focused === true);
-
-api.state.studentId = '2024010101';
-api.renderStudentBadge();
-check('填了学号 → 徽章变「已填写」并变绿',
-  el.studentBadge.textContent === '已填写'
-  && el.studentBadge.classList.contains('badge--ok'), el.studentBadge.textContent);
-check('填了学号 → 提示语带上具体学号',
-  el.studentHint.textContent.includes('2024010101'), el.studentHint.textContent);
-check('填了学号之后 requireStudentId() 放行', api.requireStudentId() === true);
+// ---- 3. 单机版身份：不需要学号，错题本接口不带任何身份参数 ----
+delete localStorageStub._data['ai-tutor.studentId'];   // 旧版本可能残留过，确认新代码不读它
+check('页面源码里不再有学号输入框（单机版不需要）', !('studentId' in api.el));
 
 // ---- 4. 错题本列表渲染 ----
 const ERROR_BOOK = {
-  student_id: '2024010101',
+  student_id: 'local',
   total: 2,
   items: [
-    { id: 11, student_id: '2024010101', filename: 'demo.py', language: 'python',
+    { id: 11, student_id: 'local', filename: 'demo.py', language: 'python',
       error_type: '逻辑错误', knowledge_point: '循环边界', ai_feedback: '少遍历了最后一个元素',
       code_snippet: 'for i in range(1, n):', created_at: '2024-05-02T10:00:00' },
-    { id: 12, student_id: '2024010101', filename: 'demo.c', language: 'c',
+    { id: 12, student_id: 'local', filename: 'demo.c', language: 'c',
       error_type: '语法错误', knowledge_point: '分号', ai_feedback: '第 3 行缺少分号',
       code_snippet: 'int a = 1', created_at: '2024-05-01T09:00:00' },
   ],
@@ -1388,8 +1373,9 @@ queueResponse(ERROR_BOOK);
 await api.loadErrorBook();
 const errorListCall = findCall('GET', '/api/v1/tutor/errors');
 check('错题本：拉的是 GET /api/v1/tutor/errors', Boolean(errorListCall));
-check('错题本：请求带上了 X-Student-Id（否则会读到别人的错题本）',
-  Boolean(errorListCall) && errorListCall.options.headers['X-Student-Id'] === '2024010101');
+check('错题本：请求不带任何身份头（单机版归档到固定身份 local）',
+  Boolean(errorListCall) && !('X-Student-Id' in errorListCall.options.headers),
+  JSON.stringify(errorListCall ? errorListCall.options.headers : {}));
 check('错题本：右上角显示条数', el.wrongBookCount.textContent === '错题本 2 条',
   el.wrongBookCount.textContent);
 check('错题本：易错知识点区显示出来了', el.weakPointBox.hidden === false);
@@ -1401,8 +1387,8 @@ check('错题本：明细里带上 AI 反馈原文',
   el.errorLogList.innerHTML.includes('少遍历了最后一个元素'));
 check('错题本：有错题时下半屏不再是空状态', el.wrongBookEmpty.hidden === true);
 
-// 空错题本
-queueResponse({ student_id: '2024010101', total: 0, items: [], weak_points: [] });
+// 空错题本（全新安装时就是这个样子）
+queueResponse({ student_id: 'local', total: 0, items: [], weak_points: [] });
 await api.loadErrorBook();
 check('错题本为空时显示空状态（不是一片空白）', el.wrongBookEmpty.hidden === false);
 check('错题本为空时条数显示 0', el.wrongBookCount.textContent === '错题本 0 条');
@@ -1469,7 +1455,7 @@ check('错题本：题目描述与提示都渲染出来了',
   el.exerciseDesc.textContent.includes('subtract') && el.exerciseHint.textContent.includes('顺序'));
 check('错题本：知识点解析区显示出来了', el.explanationBox.hidden === false);
 check('错题本：写明"本次参考了 N 条历史错题"（学生看得出 AI 读过他的错题本）',
-  el.studentHint.textContent.includes('本次参考了 2 条'), el.studentHint.textContent);
+  el.wrongBookHint.textContent.includes('本次参考了 2 条'), el.wrongBookHint.textContent);
 
 // ---- 7. Markdown 渲染与 XSS 消毒 ----
 delete windowStub.marked;

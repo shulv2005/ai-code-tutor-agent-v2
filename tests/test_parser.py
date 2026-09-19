@@ -178,10 +178,10 @@ def test_empty_source_is_handled() -> None:
 # ---------------------------------------------------------------------------
 # 文件遍历与编码
 # ---------------------------------------------------------------------------
-def test_iter_source_files_skips_excluded_dirs_and_non_source(sample_repo: Path) -> None:
+def test_iter_source_files_skips_excluded_dirs_and_non_source(sample_tree: Path) -> None:
     excluded = {".git", "node_modules", "__pycache__"}
-    found = {to_posix_relative(item, sample_repo) for item in iter_source_files(
-        sample_repo, excluded_dirs=excluded
+    found = {to_posix_relative(item, sample_tree) for item in iter_source_files(
+        sample_tree, excluded_dirs=excluded
     )}
     assert "pkg/core.py" in found
     assert "web.js" in found
@@ -191,19 +191,19 @@ def test_iter_source_files_skips_excluded_dirs_and_non_source(sample_repo: Path)
     assert not any("node_modules" in item for item in found)
 
 
-def test_iter_source_files_respects_max_files(sample_repo: Path) -> None:
-    found = list(iter_source_files(sample_repo, excluded_dirs={".git"}, max_files=1))
+def test_iter_source_files_respects_max_files(sample_tree: Path) -> None:
+    found = list(iter_source_files(sample_tree, excluded_dirs={".git"}, max_files=1))
     assert len(found) == 1
 
 
-def test_parse_file_respects_size_limit(sample_repo: Path) -> None:
-    parsed = parse_file(sample_repo / "pkg" / "core.py", sample_repo, max_file_bytes=10)
+def test_parse_file_respects_size_limit(sample_tree: Path) -> None:
+    parsed = parse_file(sample_tree / "pkg" / "core.py", sample_tree, max_file_bytes=10)
     assert parsed.parse_error is not None
     assert "上限" in parsed.parse_error
 
 
-def test_parse_file_reports_relative_posix_path(sample_repo: Path) -> None:
-    parsed = parse_file(sample_repo / "pkg" / "core.py", sample_repo, max_file_bytes=10**6)
+def test_parse_file_reports_relative_posix_path(sample_tree: Path) -> None:
+    parsed = parse_file(sample_tree / "pkg" / "core.py", sample_tree, max_file_bytes=10**6)
     assert parsed.path == "pkg/core.py"
     assert "\\" not in parsed.path
 

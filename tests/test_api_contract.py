@@ -17,18 +17,6 @@ from app.main import create_app
 EXPECTED_ROUTES = {
     "/api/v1/health": {"get"},
     "/api/v1/health/ready": {"get"},
-    "/api/v1/repositories/languages": {"get"},
-    "/api/v1/repositories": {"get", "post"},
-    "/api/v1/repositories/{repository_id}": {"get"},
-    "/api/v1/repositories/{repository_id}/structure": {"get"},
-    "/api/v1/repositories/{repository_id}/reindex": {"post"},
-    "/api/v1/repositories/{repository_id}/index": {"post"},
-    "/api/v1/search": {"post"},
-    "/api/v1/agent/status": {"get"},
-    "/api/v1/agent/generate_test": {"post"},
-    "/api/v1/agent/auto_fix": {"post"},
-    "/api/v1/sandbox/status": {"get"},
-    "/api/v1/sandbox/run": {"post"},
     # 学生代码导师场景（本地化 AI 代码导师系统）
     "/api/v1/tutor/analyze": {"post"},
     "/api/v1/tutor/check": {"post"},
@@ -166,21 +154,6 @@ def test_no_untagged_operations(spec: dict) -> None:
 @pytest.mark.parametrize(
     ("schema_name", "field"),
     [
-        ("SearchResponse", "hits"),
-        ("SearchResponse", "trace_id"),
-        ("TestGenerationResponse", "saved_path"),
-        ("TestGenerationResponse", "sandbox_dir"),
-        ("TestGenerationResponse", "trace_id"),
-        ("AutoFixResponse", "final_diff"),
-        ("AutoFixResponse", "iterations"),
-        ("AutoFixResponse", "pr_draft"),
-        ("AutoFixResponse", "issue_comment"),
-        ("AutoFixResponse", "trace_id"),
-        ("SandboxRunResponse", "coverage"),
-        ("SandboxRunResponse", "isolated"),
-        ("IndexBuildResponse", "embedder"),
-        ("PrDraftRead", "branch_name"),
-        ("PrDraftRead", "verified"),
         # 学生代码导师场景：前端直接渲染这些字段，改名即白屏
         ("AnalyzeResponse", "language"),
         ("AnalyzeResponse", "language_label"),
@@ -263,20 +236,6 @@ def test_response_schema_exposes_field(spec: dict, schema_name: str, field: str)
     assert field in schemas[schema_name]["properties"], f"{schema_name} 缺少字段 {field}"
 
 
-def test_auto_fix_response_status_enum_matches_planner(spec: dict) -> None:
-    """响应里的 status 取值必须与 Planner 的终止原因集合一致。"""
-    from app.agents.planner import LoopStatus
-
-    schema = spec["components"]["schemas"]["AutoFixResponse"]
-    declared = set(schema["properties"]["status"]["enum"])
-
-    expected = set(LoopStatus.__args__)  # type: ignore[attr-defined]
-    assert declared == expected, (
-        f"AutoFixResponse.status 与 LoopStatus 不一致："
-        f"仅声明={sorted(declared - expected)} 仅实现={sorted(expected - declared)}"
-    )
-
-
 def test_all_response_models_are_declared(spec: dict) -> None:
     """所有响应模型都应出现在 components 里（否则文档不完整）。"""
     schemas = spec["components"]["schemas"]
@@ -339,10 +298,6 @@ def test_route_inventory_summary(spec: dict) -> None:
     api_tags = {tag for tag in by_tag if tag != "meta"}
     assert api_tags == {
         "health",
-        "repositories",
-        "retrieval",
-        "agent",
-        "sandbox",
         "tutor",
         "library",
         "files",

@@ -82,7 +82,7 @@ set "PY_CMD="
 
 REM 选择 Python 的顺序很关键。电脑上可能装了多个 Python，
 REM py -3 会挑「最新」的那个（例如 3.14），但部分第三方库
-REM （faiss-cpu、fastembed 等）还没有为新版本提供预编译包，
+REM （tree-sitter 及其语法包）还没有为新版本提供预编译包，
 REM 会导致依赖安装失败。所以优先选本项目验证过的成熟版本。
 
 REM ① 优先用 PATH 上的 python：通常是学生按教程安装并勾选了 Add to PATH 的那个
@@ -194,7 +194,7 @@ REM   * python_multipart（上传代码文件要用）缺失时，服务能启动但一上传就 500；
 REM   * tree_sitter_c / tree_sitter_java（C 和 Java 的语法包）缺失时，
 REM     服务照常运行，但解析 C/Java 代码的结构会静默失败，学生看不出原因。
 REM 这类"能启动但功能残缺"的问题最难排查，所以这里宁多勿少。
-python -c "import fastapi, uvicorn, sqlalchemy, tree_sitter, tree_sitter_c, tree_sitter_java, faiss, python_multipart" >nul 2>&1
+python -c "import fastapi, uvicorn, sqlalchemy, tree_sitter, tree_sitter_c, tree_sitter_java, python_multipart" >nul 2>&1
 if errorlevel 1 (
     echo       依赖不完整，开始安装（首次约需 3-10 分钟，请耐心等待）...
     echo.

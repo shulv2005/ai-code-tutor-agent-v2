@@ -8,7 +8,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-BASE = Path(r"D:\桌面\开源项目智能测试与贡献agent")
+# 项目根目录从本文件位置反推，**不要写死绝对路径**。
+# 原先这里写死了 `D:\桌面\开源项目智能测试与贡献agent`，项目改名/搬家之后
+# 整个脚本直接 FileNotFoundError —— 而它恰恰是"双击 start.bat 到底行不行"
+# 的唯一自动化证据，坏了就等于这项验收形同虚设。
+BASE = Path(__file__).resolve().parent.parent
 START_LOG = BASE / "_final_start.log"
 STOP_LOG = BASE / "_final_stop.log"
 
@@ -86,10 +90,12 @@ if not ready:
 print("\n[2] 验证后端接口 ...")
 status, health = get("/api/v1/health")
 print(f"    GET /api/v1/health      -> {status}  {health.get('status')}")
-status2, langs = get("/api/v1/repositories/languages")
-language_list = langs.get("languages") or []
-print(f"    GET /repositories/languages -> {status2}  {language_list}")
-# 学生场景主打 C / Java / Python，语法包缺一个就会静默降级，必须卡住
+status2, tutor_status = get("/api/v1/tutor/status")
+language_list = list((tutor_status.get("supported_languages") or {}).keys())
+print(f"    GET /tutor/status       -> {status2}  支持语言 {language_list}")
+# 学生场景主打 C / Java / Python，语法包缺一个就会静默降级，必须卡住。
+# 这个信息原先由 /api/v1/repositories/languages 提供，那个模块
+# （开源贡献端的仓库解析）已删除，改从学生端的 /tutor/status 读。
 required_languages = {"c", "java", "python"}
 languages_ok = required_languages <= set(language_list)
 if not languages_ok:

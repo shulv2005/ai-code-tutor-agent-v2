@@ -139,11 +139,19 @@ class DiagnoseRequest(BaseModel):
 
     只被 `POST /api/analyze` 这个兼容别名使用；规范接口
     `POST /api/v1/tutor/diagnose` 走的是与其余导师接口一致的
-    multipart 表单（`code` / `filename` / `student_id`），
+    multipart 表单（`code` / `filename`），
     这样前端不用为这一个按钮单独写一套提交逻辑。
+
+    `language` 与 `student_id` 都可省略：
+      · 不传 language 按 Python 处理（学生最常用的语言）；
+      · 不传 student_id 归到本机固定身份 `local`（单机版页面上没有学号输入框）。
     """
 
-    student_id: str = Field(min_length=1, max_length=64, description="学号 / 学生标识")
+    student_id: str = Field(
+        default="local",
+        max_length=64,
+        description="可选身份标识；不传就是本机固定身份 local",
+    )
     language: str = Field(default="python", description="语言标识：python / c / java …")
     code_content: str = Field(min_length=1, description="要诊断的代码")
     filename: str | None = Field(default=None, description="可选：原始文件名")

@@ -493,111 +493,6 @@ class SecuritySettings(BaseModel):
         return value
 
 
-class RetrievalSettings(BaseModel):
-    """混合检索配置：BM25 关键词召回 + 向量语义召回，再用 RRF 融合。
-
-    关于嵌入模型的现实约束（实测结论，勿轻易改动默认值）：
-    - huggingface.co 在部分网络下不可达，必须走镜像 HF_ENDPOINT。
-    - huggingface-hub 1.x 默认使用 Xet 协议（cas-server.xethub.hf.co），
-      镜像站不代理该域名会返回 401，必须设 HF_HUB_DISABLE_XET=1 回退到普通
-      HTTP 下载，否则模型权重永远拉不下来。
-    - 用 fastembed（ONNX Runtime）而不是 sentence-transformers，可省掉
-      ~2GB 的 PyTorch 依赖。
-    """
-
-    vector_backend: Literal["faiss", "chroma"] = "faiss"
-    index_dir: Path = PROJECT_ROOT / "data" / "index"
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"
-    embedding_dim: int = 512
-    # 嵌入后端：fastembed=真语义（ONNX）；hashing=零依赖确定性哈希，用于离线/测试兜底
-    embedder: Literal["fastembed", "hashing"] = "fastembed"
-    hf_endpoint: str = "https://hf-mirror.com"
-    hf_disable_xet: bool = True
-    model_cache_dir: Path = PROJECT_ROOT / "data" / "models"
-    embed_batch_size: int = 64
-
-    top_k: int = 10
-    # 每路召回量 = top_k * candidate_multiplier，再融合重排，提升召回率
-    candidate_multiplier: int = 3
-    bm25_weight: float = 0.5
-    vector_weight: float = 0.5
-    # RRF 平滑常数：越大则各路排名差异越被拉平（60 为常用默认值）
-    rrf_k: int = 60
-    # 单个符号送入嵌入模型的文本上限，防止超大函数拖慢索引
-    max_chunk_chars: int = 2000
-    # 检索时把测试符号排到实现代码之后（实测测试符号可占索引 60%+）
-    prefer_non_test: bool = True
-
-    @property
-    def index_path(self) -> Path:
-        """向量索引目录的绝对路径。"""
-        path = self.index_dir.expanduser()
-        return path if path.is_absolute() else PROJECT_ROOT / path
-
-    @property
-    def cache_path(self) -> Path:
-        """嵌入模型缓存目录的绝对路径。"""
-        path = self.model_cache_dir.expanduser()
-        return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-class DockerSettings(BaseModel):
-    """沙箱执行配置：隔离运行 pytest 与 coverage.py。
-
-    关于镜像与依赖的一个现实约束：
-    `python:3.10-slim` 这类纯净基础镜像**不含 pytest / coverage**，
-    因此要么在容器启动时 pip 安装（需要网络，会削弱隔离强度），
-    要么预先构建好带依赖的镜像（推荐，可全程断网）。
-    两个路径都支持，由 image + install_dependencies 组合决定。
-    """
-
-    # auto = 优先 docker，daemon 不可用时降级 local；docker / local = 强制指定
-    backend: Literal["auto", "docker", "local"] = "auto"
-    # 实际运行的镜像；生产建议换成预构建镜像并关闭 install_dependencies
-    image: str = "python:3.10-slim"
-    # 预构建镜像的基底，供 docker/sandbox.Dockerfile 使用
-    base_image: str = "python:3.10-slim"
-    # 容器启动时先 pip install pytest coverage（需要网络）
-    install_dependencies: bool = True
-    # pip 镜像源（国内网络建议设为 https://pypi.tuna.tsinghua.edu.cn/simple 等）
-    pip_index_url: str = ""
-    # 沙箱内运行测试的用户；留空用镜像默认。生产建议设非 root（如 1000:1000）
-    sandbox_user: str = ""
-
-    timeout_seconds: int = 300
-    memory_limit: str = "1g"
-    cpu_limit: float = 2.0
-    pids_limit: int = 256
-    network_disabled: bool = True
-    read_only_root: bool = True
-    # read_only_root 为真时可写的 tmpfs 挂载点与容量
-    tmpfs_size: str = "64m"
-    workspace_dir: Path = PROJECT_ROOT / "data" / "workspaces"
-    workspace_mount: str = "/workspace"
-    max_output_bytes: int = 1_000_000
-    # 生成测试所在子目录（Step 4 的落盘位置）
-    test_dir: str = "tests"
-
-    @field_validator("cpu_limit")
-    @classmethod
-    def _positive_cpu(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("cpu_limit 必须为正数")
-        return value
-
-    @property
-    def workspace_path(self) -> Path:
-        """宿主机上的沙箱工作区绝对路径。"""
-        path = self.workspace_dir.expanduser()
-        return path if path.is_absolute() else PROJECT_ROOT / path
-
-    @property
-    def needs_network_for_setup(self) -> bool:
-        """安装依赖时必须放行网络（否则 pip 无法工作）。"""
-        return self.install_dependencies and not self.pip_index_url.startswith("file:")
-
-
-
 class TracingSettings(BaseModel):
     """Agent Trace 配置。"""
 
@@ -607,51 +502,6 @@ class TracingSettings(BaseModel):
     capture_output: bool = True
     max_payload_chars: int = 2000
     memory_buffer_size: int = 1000
-
-
-class RepositorySettings(BaseModel):
-    """仓库解析模块配置：克隆策略、安全边界与解析范围。"""
-
-    workspace_dir: Path = PROJECT_ROOT / "data" / "repos"
-    # 浅克隆深度；设为 0 表示完整克隆（需要完整 git 历史时用）
-    clone_depth: int = 1
-    clone_timeout_seconds: int = 300
-    # 只允许从这些主机的 http(s) 地址克隆，防止 file:// 本地文件读取与 SSRF
-    allowed_hosts: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["github.com", "gitee.com"]
-    )
-    # 仓库体积上限（MB），克隆后校验，超限拒绝索引
-    max_repo_size_mb: int = 500
-    # 单文件解析上限，超过则只记元信息、不做符号解析（避免解析超大生成文件）
-    max_file_bytes: int = 512_000
-    # 单仓库最多索引文件数，防止巨型仓库打爆 SQLite
-    max_files: int = 5_000
-    excluded_dirs: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
-            "env", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
-            "build", ".next", "target", "vendor", "site-packages", ".idea", ".vscode",
-        ]
-    )
-
-    @field_validator("allowed_hosts", "excluded_dirs", mode="before")
-    @classmethod
-    def _split_lists(cls, value: object) -> object:
-        """见 split_csv_list 说明（NoDecode + 自定义拆分）。"""
-        return split_csv_list(value)
-
-    @field_validator("clone_depth")
-    @classmethod
-    def _non_negative_depth(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("clone_depth 不能为负数")
-        return value
-
-    @property
-    def workspace_path(self) -> Path:
-        """宿主机上的仓库克隆根目录（绝对路径）。"""
-        path = self.workspace_dir.expanduser()
-        return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 class LibrarySettings(BaseModel):
@@ -845,10 +695,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
-    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
-    docker: DockerSettings = Field(default_factory=DockerSettings)
     tracing: TracingSettings = Field(default_factory=TracingSettings)
-    repository: RepositorySettings = Field(default_factory=RepositorySettings)
     library: LibrarySettings = Field(default_factory=LibrarySettings)
     classifier: ClassifierSettings = Field(default_factory=ClassifierSettings)
 
@@ -870,10 +717,6 @@ class Settings(BaseSettings):
     def ensure_directories(self) -> None:
         """一次性创建运行期需要的本地目录。"""
         self.database.ensure_directory()
-        self.retrieval.index_path.mkdir(parents=True, exist_ok=True)
-        self.retrieval.cache_path.mkdir(parents=True, exist_ok=True)
-        self.docker.workspace_path.mkdir(parents=True, exist_ok=True)
-        self.repository.workspace_path.mkdir(parents=True, exist_ok=True)
         # 默认项目库目录：建出来学生才知道代码该放哪儿
         self.library.default_path.mkdir(parents=True, exist_ok=True)
         # 分类根目录 + 三个归档目录：先把"收纳盒"摆好，学生一看就明白会归到哪。

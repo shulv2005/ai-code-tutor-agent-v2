@@ -38,11 +38,11 @@ if str(BASE) not in sys.path:
 # 数字只写"下限"，以后加接口不用改这个表；但少一个模块立刻失败。
 EXPECTED_MODULES: dict[str, int] = {
     "health": 2,
-    "repositories": 7,
-    "retrieval": 1,
-    "agent": 3,
-    "sandbox": 2,
-    "tutor": 8,
+    # tutor 现在有 11 个操作：status / analyze / check / comment / fix
+    # + diagnose（错题本 + 举一反三）/ errors(GET) / errors(DELETE)
+    # + history 列表 / 详情 / 删除。
+    # 数字只写"下限"，但少一个模块或误删一条接口会立刻失败。
+    "tutor": 11,
     # 项目库现在有 5 个操作：scan / file(GET) / file(PUT) / file(DELETE) / status。
     # 写两个（PUT/DELETE）是「在线编辑保存 / 替换 / 删除」用的，
     # 谁把它们误删了，这条断言会立刻报警。
@@ -59,16 +59,15 @@ EXPECTED_MODULES: dict[str, int] = {
 
 # 期望存在的数据库表（每个功能模块的落库表）
 EXPECTED_TABLES = {
-    "repositories",
-    "code_files",
-    "code_symbols",
+    # 学习流水账 + 错题本
     "tutor_records",
-    "classified_files",
+    "student_error_logs",
+    # 三个学习功能的历史
     "code_check_records",
     "code_fix_records",
     "comment_records",
-    # 错题本：每次诊断判定有错时归档，供"举一反三"出题时回查历史
-    "student_error_logs",
+    # 文件自动分类台账
+    "classified_files",
 }
 
 # README 必须包含的章节关键词（对应需求里点名的内容）
@@ -92,6 +91,8 @@ EXPECTED_FRONTEND_FILES = [
 # 各模块的核心实现文件（少一个说明整合不完整）
 EXPECTED_SERVICE_FILES = [
     "app/api/v1/router.py",
+    # 兼容别名：需求文档指定的 POST /api/analyze，转调 /api/v1/tutor/diagnose
+    "app/api/compat.py",
     "app/api/v1/endpoints/check.py",
     "app/api/v1/endpoints/fix.py",
     "app/api/v1/endpoints/comment.py",
@@ -102,6 +103,12 @@ EXPECTED_SERVICE_FILES = [
     "app/services/code_fixer.py",
     "app/services/comment_generator.py",
     "app/services/classifier_placeholder",  # 占位：下面会单独判断 file_classifier
+    # 错题本：记录服务 + ORM 模型 + 建表 SQL 参考 + 设计文档
+    "app/services/tutor_service.py",
+    "app/models/error_log.py",
+    "app/models/base.py",
+    "docs/student_error_logs.sql",
+    "docs/错题本与举一反三-设计与数据流.md",
 ]
 
 checks: list[tuple[str, bool]] = []
@@ -185,11 +192,19 @@ def check_requirements() -> None:
     )
     extra = sorted(set(installed) - set(declared))
     report(
-        "requirements.txt 没有多余依赖（coverage/docker 例外见注释）",
-        set(extra) <= {"coverage", "docker"},
+        "requirements.txt 没有多余依赖（coverage 例外见注释）",
+        set(extra) <= {"coverage"},
         f"多出：{extra}" if extra else "",
     )
-    report(f"两边共有 {len(set(declared) & set(installed))} 个包", len(declared) >= 20)
+    # 这条是"防清空"的兜底门槛，不是精确数字：真正要防的是有人误删了
+    # 依赖清单里的某一大段（那种情况下"覆盖/多余"两条比对会双双通过，
+    # 因为两边一起被删干净了）。因此只写一个合理的下限。
+    # 当前实际是 16 个（FastAPI 全家桶 + SQLite + httpx/openai + 6 个 tree-sitter 包），
+    # 移除了开源贡献端之后从 25 降下来的——别再往上调，除非真的加了依赖。
+    report(
+        f"依赖清单没有被清空（当前 {len(set(declared) & set(installed))} 个包，下限 12）",
+        len(set(declared) & set(installed)) >= 12,
+    )
 
 
 # ---------------------------------------------------------------------------

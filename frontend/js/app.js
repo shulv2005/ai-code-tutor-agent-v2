@@ -10,7 +10,7 @@
      3.5 代码在线编辑         —— 编辑 / 保存 / 取消、行号、快捷键
      4. 上传与分析            —— 语言识别 + 结构解析
      5. 三个 AI 功能          —— 检测 / 注释 / 改错
-     5.4 错题本 + 举一反三    —— 学号、Markdown 渲染、诊断、错题本面板
+     5.4 错题本 + 举一反三    —— Markdown 渲染、诊断、错题本面板
      6. 本地项目库            —— 扫描、浏览、编辑保存、替换、删除
      7. 历史记录
      8~10. 面板拖动、窄屏适配、三个拖拽区（需求二 / 需求三）
@@ -78,19 +78,6 @@ const FILES_BASE = '/api/v1/files';
 const MODELS_BASE = '/api/v1/models';
 const AUTH_BASE = '/api/v1/auth';
 
-/**
- * 学号在 localStorage 里的键名。
- * 与 API Key / 会话号刻意不同（那两个只放内存）：学号不是凭据，
- * 而且必须跨刷新保留——否则学生每次刷新都要重填，错题本会"断档"。
- */
-const STUDENT_STORAGE_KEY = 'ai-tutor.studentId';
-
-/**
- * 学生身份的请求头名，必须与后端的 STUDENT_HEADER 一致
- * （见 app/api/v1/endpoints/tutor.py）。
- */
-const STUDENT_HEADER = 'X-Student-Id';
-
 /** 全局状态：当前正在处理的代码，以及各个接口返回的结果 */
 const state = {
   // ---- 代码是否已载入：占位提示与三个 AI 按钮的显隐都由它决定（见 setHasCode）----
@@ -130,10 +117,9 @@ const state = {
   layout: {},
 
   // ---- 错题本 & 举一反三 ----
-  // 学号：错题本按学号归档。与 API Key / 会话号不同，它**会**写进 localStorage——
-  // 学号不是凭据（泄露了也不能拿去调模型），而且必须跨刷新保留，
-  // 否则学生每次刷新页面都会被要求重填，错题本也就"断"了。
-  studentId: '',
+  // 不需要学号/登录：这是"在自己电脑上跑"的单机版，后端把错题统一归档到
+  // 固定身份 local（见 app/api/v1/endpoints/tutor.py 的 LOCAL_STUDENT_ID）。
+  // 页面一刷新就读一次错题本，看到的就是这台机器上攒下来的全部错题。
   diagnoseResult: null,  // 最近一次 /diagnose 的返回，用于上半屏渲染
   errorBook: null,       // 最近一次 /errors 的返回（列表 + 易错知识点）
 };
@@ -164,12 +150,6 @@ const el = {
   structureList: document.getElementById('structureList'),
   historyList: document.getElementById('historyList'),
   refreshHistory: document.getElementById('refreshHistory'),
-
-  // 学号（错题本按学号归档）
-  studentCard: document.getElementById('studentCard'),
-  studentId: document.getElementById('studentId'),
-  studentBadge: document.getElementById('studentBadge'),
-  studentHint: document.getElementById('studentHint'),
 
   // 本地项目库
   libraryHint: document.getElementById('libraryHint'),
@@ -271,6 +251,7 @@ const el = {
   refreshWrongBook: document.getElementById('refreshWrongBook'),
   wrongBookEmpty: document.getElementById('wrongBookEmpty'),
   wrongBookBody: document.getElementById('wrongBookBody'),
+  wrongBookHint: document.getElementById('wrongBookHint'),
   weakPointBox: document.getElementById('weakPointBox'),
   weakPointList: document.getElementById('weakPointList'),
   historySummaryBox: document.getElementById('historySummaryBox'),
@@ -310,12 +291,9 @@ function toast(message, kind = 'info') {
  * 调用后端接口的统一入口。
  * 负责：拼地址、发请求、解析 JSON、把后端的错误提示转成中文抛出。
  *
- * 顺手做两件事：
- *   1. 只要页面上已经拿到会话号（用户填过 Key），
- *      就自动带上 `X-Session-Id` 请求头——这样后面所有 AI 调用都会用
- *      "用户选的那个模型 + 用户自己那把 Key"，不需要每个调用点各写一遍。
- *   2. 填过学号就带上 `X-Student-Id` 请求头——错题本的读写全靠它，
- *      同样不该在每个调用点各写一遍（漏一个就会出现"读了别人的错题本"）。
+ * 顺手做一件事：只要页面上已经拿到会话号（用户填过 Key），
+ * 就自动带上 `X-Session-Id` 请求头——这样后面所有 AI 调用都会用
+ * "用户选的那个模型 + 用户自己那把 Key"，不需要每个调用点各写一遍。
  *
  * @param {string} path   接口路径，例如 '/check'
  * @param {object} options fetch 的选项；body 可直接传普通对象
@@ -329,8 +307,6 @@ async function api(path, options = {}, base = API_BASE) {
   // 它等价于"临时凭据"，泄露出去别人就能用你的 Key 调模型。
   const headers = { ...(options.headers || {}) };
   if (state.sessionId) headers['X-Session-Id'] = state.sessionId;
-  // 学号可以放心放 localStorage（不是凭据），但同样通过请求头统一带上
-  if (state.studentId) headers[STUDENT_HEADER] = state.studentId;
 
   const response = await fetch(url, { ...options, headers });
 
@@ -499,10 +475,6 @@ function renderAiBadge() {
  *
  * 把三条判断收在这一个函数里，调用点就不必各写一遍，
  * 也不会出现"AI 可用但还没代码，按钮却是亮的"这种状态不一致。
- *
- * 注意「诊断 + 举一反三」**不**把"有没有学号"算进可点条件：
- * 没填学号时点一下会收到一句明确的提示并聚焦到学号输入框，
- * 比一个灰着不动的按钮更好懂（学生看得到"为什么不能点"）。
  */
 function setBusy(busy, hintText = '') {
   const clickable = !busy && aiReady() && state.hasCode;
@@ -1665,70 +1637,17 @@ async function runFix() {
    --------------------------------------------------------------------------
    这一块与上面三个 AI 功能的关键区别：**它是有状态的**。
    上面三个按钮每次都是"就这份代码给个结论"，而这里要：
-     1. 先把学号对应的历史错题捞出来，一起发给模型（在后端做）；
+     1. 先把历史错题捞出来，一起发给模型（在后端做）；
      2. 把模型给的新题目、知识点解析渲染到下半屏；
-     3. 把该学号的错题明细一直挂在下半屏，跨次累积。
+     3. 把错题明细一直挂在下半屏，跨次累积。
 
    因此页面加载时就要读一次错题本（loadErrorBook），
    而不是"等学生点了诊断才有内容"——那样学生每次刷新都会以为错题丢了。
+
+   **不需要学号、不需要登录**：这是单机版，后端把错题统一归档到固定身份
+   `local`（见 app/api/v1/endpoints/tutor.py 的 LOCAL_STUDENT_ID）。
+   这台机器上的错题就是你的错题本。
    ========================================================================== */
-
-/** 读出上次保存的学号（localStorage 不可用时就当没填过） */
-function loadSavedStudentId() {
-  try {
-    return localStorage.getItem(STUDENT_STORAGE_KEY) || '';
-  } catch (err) {
-    console.warn('读取学号失败（可能是隐私模式）：', err);
-    return '';
-  }
-}
-
-/** 保存学号（失败不影响使用，只是下次要重填） */
-function saveStudentId(value) {
-  try {
-    if (value) localStorage.setItem(STUDENT_STORAGE_KEY, value);
-    else localStorage.removeItem(STUDENT_STORAGE_KEY);
-  } catch (err) {
-    console.warn('保存学号失败：', err);
-  }
-}
-
-/** 当前学号（去掉首尾空格） */
-function currentStudentId() {
-  return String(state.studentId || '').trim();
-}
-
-/**
- * 刷新学号相关的界面：徽章、提示语。
- */
-function renderStudentBadge() {
-  const sid = currentStudentId();
-  if (sid) {
-    el.studentBadge.textContent = '已填写';
-    el.studentBadge.className = 'badge badge--ok';
-    el.studentHint.textContent = `错题本会归档到学号 ${sid}`;
-  } else {
-    el.studentBadge.textContent = '未填写';
-    el.studentBadge.className = 'badge badge--muted';
-    el.studentHint.textContent =
-      '填好学号，AI 才能结合你以前的错题出题。学号只保存在本机浏览器里。';
-  }
-}
-
-/**
- * 没填学号时的统一处理：给出明确提示并聚焦输入框。
- *
- * 为什么不改成"禁用按钮"：灰按钮不会告诉学生**为什么**点不了。
- * 让他点一下、收到一句"请先填学号"、光标自动跳到输入框，一次就懂了。
- *
- * @returns {boolean} 学号是否已填写
- */
-function requireStudentId() {
-  if (currentStudentId()) return true;
-  toast('请先在左侧「我的学号」里填写学号：错题本需要按学号归档', 'error');
-  el.studentId.focus();
-  return false;
-}
 
 /* ---------- 5.4.1 Markdown 渲染 ---------- */
 
@@ -1875,8 +1794,9 @@ function renderWrongBook(book, meta) {
   // "本次参考了几条历史错题"——让学生看得出 AI 真的读过他的错题本
   if (meta) {
     el.wrongBookCount.textContent = `错题本 ${meta.history_total} 条`;
-    el.studentHint.textContent =
+    el.wrongBookHint.textContent =
       `本次参考了 ${meta.history_count} 条历史错题，错题本共 ${meta.history_total} 条`;
+    el.wrongBookHint.hidden = false;
   }
 }
 
@@ -1884,23 +1804,12 @@ function renderWrongBook(book, meta) {
  * 点「🎯 诊断 + 举一反三」：一次调用同时填满上下两半屏。
  *
  * 流程与后端 /diagnose 一一对应：
- *   提交代码（学号走请求头）→ 上半屏渲染 analysis → 下半屏渲染错题本内容
+ *   提交代码 → 上半屏渲染 analysis → 下半屏渲染错题本内容
  *   → 重新拉一次错题本列表（把刚记进去的那条显示出来）。
+ *
+ * 不需要任何身份参数：错题由后端统一归档到本机固定身份 local。
  */
 async function runDiagnose() {
-  // 没学号就当场说清楚，并且**不要**发请求（后端会 400，但本地提示更快更具体）
-  if (!requireStudentId()) {
-    showResult('diagnose');
-    el.diagnoseStatus.textContent = '需要先填学号';
-    el.diagnoseStatus.className = 'verdict__badge is-error';
-    el.diagnoseType.textContent = '';
-    el.diagnoseMessage.textContent =
-      '错题本按学号归档：请在左侧第一张卡片「我的学号」里填写后再点一次。';
-    el.diagnoseKpBox.hidden = true;
-    el.diagnoseLogged.hidden = true;
-    return;
-  }
-
   setBusy(true, 'AI 正在结合你的错题本诊断…');
   showResult('diagnose');
   el.diagnoseStatus.textContent = '诊断中…';
@@ -1936,11 +1845,12 @@ async function runDiagnose() {
 
 /* ---------- 5.4.3 错题本列表 ---------- */
 
-/** 把错题本下半屏恢复成"空"的样子（换学号时用） */
+/** 把错题本下半屏恢复成"空"的样子 */
 function resetWrongBook() {
   state.errorBook = null;
   el.wrongBookBody.hidden = true;
   el.wrongBookEmpty.hidden = false;
+  el.wrongBookHint.hidden = true;
   el.weakPointBox.hidden = true;
   el.weakPointList.innerHTML = '';
   el.historySummaryBox.hidden = true;
@@ -1957,7 +1867,7 @@ function renderWrongBookEmpty(message) {
   el.wrongBookEmpty.hidden = false;
   el.wrongBookEmpty.innerHTML =
     `<p>${escapeHtml(message)}</p>` +
-    '<p class="empty__hint">填好学号后，点上面的「🎯 诊断 + 举一反三」</p>';
+    '<p class="empty__hint">载入一段代码，点上面的「🎯 诊断 + 举一反三」</p>';
 }
 
 /** 渲染易错知识点：条形长度 = 该知识点次数 / 最高次数 */
@@ -2012,19 +1922,12 @@ function renderErrorLogList(items) {
 }
 
 /**
- * 读取当前学号的错题本并渲染下半屏的统计与明细。
+ * 读取本机错题本并渲染下半屏的统计与明细。
  *
- * 页面加载时也会调用一次：这样刷新页面后学生照样能看到自己的错题本，
+ * 页面加载时也会调用一次：这样刷新页面后学生照样能看到自己攒下的错题，
  * 而不是一片空白（错题本是长期资产，不该只在点按钮后才出现）。
  */
 async function loadErrorBook() {
-  const sid = currentStudentId();
-  if (!sid) {
-    resetWrongBook();
-    renderWrongBookEmpty('填好学号后，这里会显示你的错题本');
-    return;
-  }
-
   try {
     const data = await api('/errors?limit=20');
     state.errorBook = data;
@@ -2035,7 +1938,7 @@ async function loadErrorBook() {
 
     if (!data.total) {
       // 一条错题都没有：显示空状态，同时把上半屏的诊断内容保留着
-      renderWrongBookEmpty('这个学号还没有错题记录，做一次「诊断 + 举一反三」试试');
+      renderWrongBookEmpty('错题本还是空的，做一次「诊断 + 举一反三」试试');
       return;
     }
 
@@ -2051,7 +1954,7 @@ async function loadErrorBook() {
   }
 }
 
-/** 删除一条错题（二次确认 + 按学号鉴权在后端做） */
+/** 删除一条错题（必须二次确认；后端会校验只能删本机身份下的错题） */
 async function deleteErrorLog(errorId, label) {
   const ok = await showConfirm({
     title: '删除这条错题？',
@@ -2071,46 +1974,18 @@ async function deleteErrorLog(errorId, label) {
   }
 }
 
-/** 绑定左侧「我的学号」卡片 */
-function bindStudentCard() {
-  const saved = loadSavedStudentId();
-  if (saved) {
-    state.studentId = saved;
-    el.studentId.value = saved;
-  }
-  renderStudentBadge();
-
-  /** 提交学号变更：保存 + 重新读错题本 */
-  const commit = async () => {
-    const value = el.studentId.value.trim().slice(0, 64);
-    if (value === currentStudentId()) return;
-
-    state.studentId = value;
-    saveStudentId(value);
-    renderStudentBadge();
-
-    // 换了学号 = 换了错题本，必须先把下半屏清空，
-    // 否则会短暂显示上一个学号的错题（看起来像"错题串号了"，很吓人）
-    resetWrongBook();
-    await loadErrorBook();
-  };
-
-  // change 在"失焦且值变了"时触发，正好覆盖"打完字点别处"这个最常见的行为
-  el.studentId.addEventListener('change', commit);
-  el.studentId.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      el.studentId.blur();   // 触发 change
-    }
-  });
-
-  // 错题明细里的「删除」按钮是动态生成的，用事件委托
+/**
+ * 绑定错题明细里的「删除」按钮。
+ *
+ * 用事件委托：明细条目是每次刷新动态生成的，逐条绑定会随刷新丢失。
+ */
+function bindErrorLogActions() {
   el.errorLogList.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-error-id]');
     if (!button) return;
     const item = button.closest('.errorlog__item');
-    const kp = item ? item.querySelector('.errorlog__kp').textContent : '';
-    deleteErrorLog(button.dataset.errorId, kp);
+    const kpNode = item ? item.querySelector('.errorlog__kp') : null;
+    deleteErrorLog(button.dataset.errorId, kpNode ? kpNode.textContent : '');
   });
 }
 
@@ -3294,8 +3169,8 @@ async function init() {
   // ---- 模型设置（选模型 + 填自己的 API Key）----
   bindModelSettings();
 
-  // ---- 学号 + 错题本（右侧下半屏的数据源）----
-  bindStudentCard();
+  // ---- 错题本明细里的「删除」按钮（事件委托）----
+  bindErrorLogActions();
 
   bindActions();
 
