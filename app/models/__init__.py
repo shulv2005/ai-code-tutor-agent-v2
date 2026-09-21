@@ -10,6 +10,7 @@
 | 表 | 用途 |
 | --- | --- |
 | `student_error_logs` | 错题本：每次诊断判定有错时归档一条，按知识点聚合 |
+| `usage_sessions` | 使用时长：每次双击 start.bat 起一条，前端心跳续期 |
 | `code_check_records` | AI 自动检测（深度版）的历史 |
 | `code_fix_records` | AI 改错（深度版）的历史 |
 | `comment_records` | AI 注释生成的历史 |
@@ -25,6 +26,7 @@ from app.models.code_fix import CodeFixRecord
 from app.models.comment import CommentRecord
 from app.models.error_log import StudentErrorLog
 from app.models.file_record import ClassifiedFileRecord
+from app.models.usage import UsageSession
 
 __all__ = [
     "ClassifiedFileRecord",
@@ -32,5 +34,6 @@ __all__ = [
     "CodeFixRecord",
     "CommentRecord",
     "StudentErrorLog",
+    "UsageSession",
     "utc_now",
 ]

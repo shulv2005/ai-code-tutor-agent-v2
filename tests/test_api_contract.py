@@ -55,6 +55,13 @@ EXPECTED_ROUTES = {
     # 兼容别名：需求文档给的路径是 /api/analyze，内部转调 /api/v1/tutor/diagnose。
     # 它不在 /api/v1 前缀下，因此单独登记（也是唯一一条不按项目前缀走的接口）。
     "/api/analyze": {"post"},
+    # 使用时长：start.bat 启动时后端自动开一条记录，前端定时心跳续期
+    "/api/v1/usage/heartbeat": {"post"},
+    "/api/v1/usage/current": {"get"},
+    "/api/v1/usage/summary": {"get"},
+    # 学习报告：错题明细 + 易错知识点汇总，可导出 Word 给老师
+    "/api/v1/report/summary": {"get"},
+    "/api/v1/report/word": {"get"},
 }
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
@@ -125,6 +132,9 @@ def test_tags_are_from_known_set(spec: dict) -> None:
         # 多模型与网页填 Key：auth=会话管理，models=模型清单
         "auth",
         "models",
+        # 使用时长与学习报告（给老师看的那份材料）
+        "usage",
+        "report",
         "meta",
     }
     used = {tag for _, _, op in _operations(spec) for tag in op.get("tags", [])}
@@ -296,6 +306,8 @@ def test_route_inventory_summary(spec: dict) -> None:
     assert api_tags == {
         "health",
         "tutor",
+        "usage",
+        "report",
         "library",
         "files",
         "check",

@@ -259,6 +259,24 @@ const el = {
   errorListBox: document.getElementById('errorListBox'),
   errorLogList: document.getElementById('errorLogList'),
 
+  // 学习报告（侧边栏 ④）
+  reportCard: document.getElementById('reportCard'),
+  reportLiveTime: document.getElementById('reportLiveTime'),
+  reportRange: document.getElementById('reportRange'),
+  reportTotalTime: document.getElementById('reportTotalTime'),
+  reportDays: document.getElementById('reportDays'),
+  reportErrorTotal: document.getElementById('reportErrorTotal'),
+  reportWeakBox: document.getElementById('reportWeakBox'),
+  reportWeakList: document.getElementById('reportWeakList'),
+  reportHint: document.getElementById('reportHint'),
+  reportPreview: document.getElementById('reportPreview'),
+  reportDownload: document.getElementById('reportDownload'),
+  reportModal: document.getElementById('reportModal'),
+  reportModalBody: document.getElementById('reportModalBody'),
+  reportModalClose: document.getElementById('reportModalClose'),
+  reportModalDownload: document.getElementById('reportModalDownload'),
+  refreshReport: document.getElementById('refreshReport'),
+
   toast: document.getElementById('toast'),
 };
 
@@ -2011,6 +2029,264 @@ function bindErrorLogActions() {
 }
 
 /* ==========================================================================
+   5.5 学习报告（使用时长 + 错题整改，可导出 Word 给老师）
+   --------------------------------------------------------------------------
+   三件事，分清楚：
+
+   1. **记录使用时间**。学生双击 start.bat 那一刻，后端在启动时就已经开了一条
+      使用记录（app/main.py 的 lifespan），前端不用"开始计时"，只要**续期**：
+      每 HEARTBEAT_INTERVAL_MS 调一次 /usage/heartbeat，后端按截断后的间隔
+      累加有效时长。页面关掉 → 心跳停 → 时长不再增长，这正是我们想要的语义。
+   2. **显示本次时长**。服务端值是"上一次心跳为止"的数，两次心跳之间不动。
+      所以本地每秒自己往前推，每次心跳回来再以服务端值为准纠偏：
+      既跟手，又不会因为标签页被挂起而漂出一大截。
+   3. **导出 Word**。按钮是普通 <a download>，浏览器直接下载；
+      JS 只负责在区间切换时把 href 里的 range 改掉。
+   ========================================================================== */
+
+/** 心跳间隔：60 秒。比后端 300 秒的单段封顶小得多，挂起一会儿也不会被截断。 */
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
+
+/** 本地计时器刷新间隔：1 秒（只改显示，不请求） */
+const LIVE_TICK_MS = 1000;
+
+/** 心跳停多久之后本地推进就停住（与后端 MAX_HEARTBEAT_GAP_SECONDS 保持一致） */
+const LIVE_DRIFT_CAP_SECONDS = 300;
+
+const REPORT_BASE = '/api/v1/report';
+const USAGE_BASE = '/api/v1/usage';
+
+/** 与报告相关的临时状态，不放进全局 state（它们只服务这一块） */
+const reportState = {
+  serverSeconds: 0,     // 服务端确认过的本次有效秒数
+  syncedAt: 0,          // 上面那个数值是什么时候拿到的（本地毫秒时间戳）
+  heartbeatTimer: null,
+  tickTimer: null,
+  visibilityBound: false,
+};
+
+/** 秒数 → 「时:分:秒」。跳动的计时器用这个，比"1 小时 27 分"合适。 */
+function formatClock(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** 刷新「本次已使用」的显示（不请求，纯本地推进） */
+function renderReportLive() {
+  if (!el.reportLiveTime) return;
+  const elapsed = (Date.now() - reportState.syncedAt) / 1000;
+  // 本地推进量也按后端同样的口径封顶：万一心跳一直失败（服务挂了），
+  // 显示值最多比最后一次同步多 5 分钟，不会无限涨下去骗人。
+  const drift = Math.min(Math.max(0, elapsed), LIVE_DRIFT_CAP_SECONDS);
+  el.reportLiveTime.textContent = formatClock(reportState.serverSeconds + drift);
+}
+
+/** 一次心跳：把服务端的权威值取回来，并重置本地漂移基准 */
+async function sendHeartbeat() {
+  try {
+    const data = await api(
+      '/heartbeat', { method: 'POST', body: JSON.stringify({}) }, USAGE_BASE,
+    );
+    if (typeof data.active_seconds === 'number') {
+      reportState.serverSeconds = data.active_seconds;
+      reportState.syncedAt = Date.now();
+      renderReportLive();
+    }
+  } catch (err) {
+    // 心跳失败不打扰学生：可能只是网络抖了一下，下一分钟还会再试。
+    console.warn('[report] 心跳失败', err);
+  }
+}
+
+/** 启动心跳 + 本地计时器（init 里调一次） */
+function startUsageHeartbeat() {
+  sendHeartbeat();
+  if (reportState.heartbeatTimer === null) {
+    reportState.heartbeatTimer = window.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+  }
+  if (reportState.tickTimer === null) {
+    reportState.tickTimer = window.setInterval(renderReportLive, LIVE_TICK_MS);
+  }
+  if (!reportState.visibilityBound) {
+    reportState.visibilityBound = true;
+    // 从后台切回来时立刻补一次心跳：标签页被挂起期间定时器不执行，
+    // 回来第一时间对齐服务端，比等下一次定时器到点更准。
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) sendHeartbeat();
+    });
+  }
+}
+
+/** 当前选中的统计区间 */
+function currentReportRange() {
+  return (el.reportRange && el.reportRange.value) || '30';
+}
+
+/** 把区间同步到下载链接上（切区间不必重新请求，改 href 即可） */
+function syncReportLinks() {
+  const range = encodeURIComponent(currentReportRange());
+  const href = `${REPORT_BASE}/word?range=${range}`;
+  if (el.reportDownload) el.reportDownload.href = href;
+  if (el.reportModalDownload) el.reportModalDownload.href = href;
+}
+
+/** 读一次报告汇总，刷新侧边栏上的数字与易错知识点 */
+async function loadReport() {
+  if (!el.reportCard) return;
+  syncReportLinks();
+
+  try {
+    const data = await api(
+      `/summary?range=${encodeURIComponent(currentReportRange())}`, {}, REPORT_BASE,
+    );
+
+    el.reportTotalTime.textContent = data.usage.total_text;
+    el.reportDays.textContent = `${data.usage.active_days} 天`;
+    el.reportErrorTotal.textContent = `${data.errors.total} 条`;
+
+    renderReportWeakList(data.errors.weak_points || []);
+
+    // 区间内既没用过、也没错题：如实说明，而不是显示一堆 0 让人以为坏了
+    if (!data.usage.session_count && !data.errors.total) {
+      el.reportHint.textContent = `${data.range_label}内没有使用记录，也没有错题。`;
+    } else {
+      el.reportHint.textContent =
+        `${data.range_label}：使用 ${data.usage.session_count} 次，` +
+        `错题 ${data.errors.total} 条。点「导出 Word 学习报告」交给老师。`;
+    }
+  } catch (err) {
+    el.reportHint.textContent = `统计失败：${err.message}`;
+  }
+}
+
+/** 易错知识点条形图（复用下半屏 .weak 的样式，保持观感一致） */
+function renderReportWeakList(points) {
+  if (!el.reportWeakBox || !el.reportWeakList) return;
+  if (!points.length) {
+    el.reportWeakBox.hidden = true;
+    el.reportWeakList.innerHTML = '';
+    return;
+  }
+  const max = Math.max(...points.map((item) => item.count)) || 1;
+  el.reportWeakList.innerHTML = points.slice(0, 5).map((item) => {
+    const percent = Math.round((item.count / max) * 100);
+    return `
+      <li class="weak__item">
+        <div class="weak__head">
+          <span>${escapeHtml(item.knowledge_point)}</span>
+          <span class="weak__count">${item.count} 次 · ${escapeHtml(item.ratio)}</span>
+        </div>
+        <div class="weak__bar"><span style="width:${percent}%"></span></div>
+      </li>`;
+  }).join('');
+  el.reportWeakBox.hidden = false;
+}
+
+/** 报告预览弹窗的内容：与导出的 Word 同源，先看一眼老师会看到什么 */
+function renderReportPreview(data) {
+  const weakRows = data.errors.weak_points.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.knowledge_point)}</td>
+      <td class="is-num">${item.count}</td>
+      <td class="is-num">${escapeHtml(item.ratio)}</td>
+    </tr>`).join('');
+
+  const errorRows = data.errors.items.slice(0, 20).map((item) => `
+    <tr>
+      <td>${escapeHtml(formatServerTime(item.created_at))}</td>
+      <td>${escapeHtml(item.error_type)}</td>
+      <td>${escapeHtml((item.knowledge_points || []).slice(0, 3).join('、'))}</td>
+      <td>${escapeHtml(item.ai_feedback_excerpt)}</td>
+    </tr>`).join('');
+
+  const tips = data.suggestions.map((tip) => `<li>${escapeHtml(tip)}</li>`).join('');
+
+  el.reportModalBody.innerHTML = `
+    <p class="report-view__section">基本信息</p>
+    <dl class="report-view__kv">
+      <dt>学生标识</dt><dd>${escapeHtml(data.student_id)}</dd>
+      <dt>统计区间</dt><dd>${escapeHtml(data.range_label)}</dd>
+      <dt>生成时间</dt><dd>${escapeHtml(formatServerTime(data.generated_at))}</dd>
+    </dl>
+
+    <p class="report-view__section">一、使用情况</p>
+    <dl class="report-view__kv">
+      <dt>累计有效时长</dt><dd>${escapeHtml(data.usage.total_text)}</dd>
+      <dt>使用天数 / 次数</dt><dd>${data.usage.active_days} 天 / ${data.usage.session_count} 次</dd>
+      <dt>平均每次</dt><dd>${escapeHtml(data.usage.average_text)}</dd>
+    </dl>
+
+    <p class="report-view__section">二、错题整改情况</p>
+    ${weakRows ? `
+      <table class="report-view__table">
+        <thead><tr><th>易错知识点</th><th>次数</th><th>占比</th></tr></thead>
+        <tbody>${weakRows}</tbody>
+      </table>` : '<p>本区间没有错题。</p>'}
+    ${errorRows ? `
+      <p class="report-view__section">错题明细（最多显示 20 条）</p>
+      <table class="report-view__table">
+        <thead><tr><th>时间</th><th>类型</th><th>知识点</th><th>问题说明</th></tr></thead>
+        <tbody>${errorRows}</tbody>
+      </table>` : ''}
+
+    <p class="report-view__section">三、学习建议</p>
+    <ol class="report-view__tip">${tips}</ol>
+  `;
+}
+
+/** 点「查看报告内容」 */
+async function openReportPreview() {
+  if (!el.reportModal) return;
+  el.reportModal.classList.remove('hidden');
+  el.reportModalBody.innerHTML = '<p>正在统计…</p>';
+  try {
+    const data = await api(
+      `/summary?range=${encodeURIComponent(currentReportRange())}`, {}, REPORT_BASE,
+    );
+    renderReportPreview(data);
+  } catch (err) {
+    el.reportModalBody.innerHTML = `<p>读取报告失败：${escapeHtml(err.message)}</p>`;
+  }
+}
+
+/** 关闭报告预览 */
+function closeReportPreview() {
+  if (el.reportModal) el.reportModal.classList.add('hidden');
+}
+
+/** 绑定学习报告卡片上的交互 */
+function bindReportCard() {
+  if (!el.reportCard) return;
+
+  el.refreshReport.addEventListener('click', loadReport);
+
+  el.reportRange.addEventListener('change', () => {
+    // 切区间要重新统计；两个下载链接同步跟着变
+    syncReportLinks();
+    loadReport();
+  });
+
+  el.reportPreview.addEventListener('click', openReportPreview);
+  el.reportModalClose.addEventListener('click', closeReportPreview);
+
+  // 点遮罩关闭（点弹窗本体不算）
+  el.reportModal.addEventListener('click', (event) => {
+    if (event.target === el.reportModal) closeReportPreview();
+  });
+
+  // Esc 关闭。与确认弹窗共存：那边开着时这里不动。
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !el.reportModal.classList.contains('hidden')) {
+      closeReportPreview();
+    }
+  });
+}
+
+/* ==========================================================================
    6. 本地项目库
    --------------------------------------------------------------------------
    面向同学的真实痛点：一学期下来 .c / .java / .py 作业散在各个文件夹里，
@@ -3354,6 +3630,10 @@ async function init() {
   // ---- 错题本明细里的「删除」按钮（事件委托）----
   bindErrorLogActions();
 
+  // ---- 学习报告：心跳 + 区间切换 + 导出（需求：记录使用时间、导出 Word）----
+  bindReportCard();
+  startUsageHeartbeat();
+
   bindActions();
 
   // 初始状态：还没有代码 → 占位提示显示、代码块隐藏、三个 AI 按钮禁用。
@@ -3365,8 +3645,9 @@ async function init() {
   // 项目库放在最后且不 await 失败——它不可用也不该影响整页启动。
   // loadErrorBook 也放在这里（而不是等学生点诊断）：错题本是长期资产，
   // 刷新页面后应该立刻能看到自己的错题，而不是一片空白。
+  // loadReport 同理：使用时长与错题统计一进页面就该有数。
   await Promise.all([
-    loadStatus(), loadLibrary(''), loadModels(), loadErrorBook(),
+    loadStatus(), loadLibrary(''), loadModels(), loadErrorBook(), loadReport(),
   ]);
 }
 

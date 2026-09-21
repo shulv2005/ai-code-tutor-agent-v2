@@ -21,7 +21,9 @@ from app.api.v1.endpoints import (
     health,
     library,
     models,
+    report,
     tutor,
+    usage,
 )
 
 api_router = APIRouter()
@@ -29,6 +31,10 @@ api_router.include_router(health.router, prefix="/health", tags=["health"])
 # AI 代码导师：面向前端「学生代码学习」页面
 # （检测 / 注释 / 改错 / 诊断（错题本 + 举一反三）+ 历史记录）
 api_router.include_router(tutor.router, prefix="/tutor", tags=["tutor"])
+# 使用时长：start.bat 启动时开一条，前端心跳累加，供学习报告统计
+api_router.include_router(usage.router, prefix="/usage", tags=["usage"])
+# 学习报告：错题明细 + 易错知识点汇总，可导出 Word 给老师
+api_router.include_router(report.router, prefix="/report", tags=["report"])
 # 本地项目库：原地扫描并按语言分类（只读，不移动文件）
 api_router.include_router(library.router, prefix="/library", tags=["library"])
 # 本地代码文件自动分类：会真正把文件归档到 c/ java/ python/ 目录

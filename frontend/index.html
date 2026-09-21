@@ -234,6 +234,77 @@
           <ul class="structure__list" id="structureList"></ul>
         </details>
       </section>
+
+      <!-- ---------- 2.4 学习报告（给老师看的那份） ---------- -->
+      <!--
+        这一块回答两个问题：
+          1. 学生到底用了多久（有效时长，不是"服务开了多久"）；
+          2. 他老在哪儿错（易错知识点排行 + 错题明细）。
+        「导出 Word」按钮走的是普通下载链接：后端用 Content-Disposition
+        把 .docx 作为附件返回，浏览器直接弹下载，不经过 JS 拼文件。
+      -->
+      <section class="card" id="reportCard">
+        <h2 class="card__title">
+          ④ 学习报告
+          <button class="btn btn--mini" id="refreshReport" title="重新统计">↻</button>
+        </h2>
+
+        <p class="report__live">
+          <span class="report__live-label">本次已使用</span>
+          <!-- 由 JS 每秒推进；数值以服务端心跳为准，见 usage_service.py -->
+          <strong class="report__live-value" id="reportLiveTime">--:--</strong>
+        </p>
+
+        <!-- 统计区间：老师可以只看最近一周，也可以看全部历史 -->
+        <div class="report__range">
+          <label class="report__range-label" for="reportRange">统计区间</label>
+          <select class="input" id="reportRange">
+            <option value="7">最近 7 天</option>
+            <option value="30" selected>最近 30 天</option>
+            <option value="90">最近 90 天</option>
+            <option value="all">全部历史</option>
+          </select>
+        </div>
+
+        <!-- 汇总数字：由 JS 填充 -->
+        <dl class="report__stats" id="reportStats">
+          <div class="report__stat">
+            <dt>累计有效时长</dt>
+            <dd id="reportTotalTime">--</dd>
+          </div>
+          <div class="report__stat">
+            <dt>使用天数</dt>
+            <dd id="reportDays">--</dd>
+          </div>
+          <div class="report__stat">
+            <dt>错题总数</dt>
+            <dd id="reportErrorTotal">--</dd>
+          </div>
+        </dl>
+
+        <!-- 易错知识点 Top 5（条形图） -->
+        <div id="reportWeakBox" hidden>
+          <p class="report__subtitle">易错知识点</p>
+          <ul class="weak" id="reportWeakList"></ul>
+        </div>
+
+        <p class="report__hint" id="reportHint">正在统计…</p>
+
+        <div class="report__actions">
+          <button class="btn btn--ghost btn--block" id="reportPreview" type="button">
+            查看报告内容
+          </button>
+          <!--
+            导出按钮做成 <a>，让浏览器自己处理下载：
+            比 JS 造 Blob 更稳（文件名、进度、断点续传都由浏览器负责），
+            也天然支持"右键 → 链接另存为"。href 由 JS 按当前区间拼。
+          -->
+          <a class="btn btn--primary btn--block" id="reportDownload"
+             href="/api/v1/report/word?range=30" download>
+            导出 Word 学习报告
+          </a>
+        </div>
+      </section>
     </aside>
 
     <!--
@@ -557,6 +628,27 @@
       <div class="modal__actions">
         <button class="btn" id="confirmCancelBtn" type="button">取消</button>
         <button class="btn btn--danger" id="confirmOkBtn" type="button">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================================
+       学习报告预览弹窗
+       ----------------------------------------------------------------------
+       与导出的 Word 同源（都来自 GET /api/v1/report/*），学生点「查看报告内容」
+       就能先看一眼老师会看到什么，不用先下载再打开。
+       单独一个弹窗而不是塞进右侧结果区：结果区那块是"这次代码的分析结果"，
+       报告是"长期学习情况"，两者语义不同，混在一起会互相顶掉。
+       ====================================================================== -->
+  <div class="modal hidden" id="reportModal">
+    <div class="modal__box modal__box--wide" role="dialog" aria-modal="true"
+         aria-labelledby="reportModalTitle">
+      <h3 class="modal__title" id="reportModalTitle">学习报告</h3>
+      <div class="modal__scroll" id="reportModalBody"></div>
+      <div class="modal__actions">
+        <button class="btn" id="reportModalClose" type="button">关闭</button>
+        <a class="btn btn--primary" id="reportModalDownload"
+           href="/api/v1/report/word?range=30" download>导出 Word</a>
       </div>
     </div>
   </div>

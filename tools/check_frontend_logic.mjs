@@ -190,6 +190,13 @@ function register(id, rect) {
   'exerciseBox', 'exerciseTitle', 'exerciseDesc', 'exerciseHint',
   'explanationBox', 'knowledgeExplanation',
   'errorListBox', 'errorLogList',
+  // 学习报告（侧边栏 ④ + 预览弹窗）
+  'reportCard', 'reportLiveTime', 'reportRange',
+  'reportTotalTime', 'reportDays', 'reportErrorTotal',
+  'reportWeakBox', 'reportWeakList', 'reportHint',
+  'reportPreview', 'reportDownload',
+  'reportModal', 'reportModalBody', 'reportModalClose', 'reportModalDownload',
+  'refreshReport',
   'toast',
 ].forEach((id) => register(id));
 
@@ -264,6 +271,30 @@ const localStorageStub = {
   removeItem(key) { delete this._data[key]; },
 };
 
+/* 定时器登记表（配合 windowStub.setInterval 的桩）。
+   app.js 里有两处定时器：60 秒的心跳、1 秒的"本次已使用"刷新。
+   不真的等时间过去，而是由测试手动调用 runIntervals(ms) 触发 —— 
+   否则这段行为就只能靠"等 60 秒"，没法进自动化用例。 */
+let intervalSeq = 0;
+const intervalJobs = [];
+
+/** 执行所有周期为 ms 的定时器回调一次（模拟"又过了一个周期"） */
+function runIntervals(ms) {
+  intervalJobs.filter((job) => job.ms === ms).forEach((job) => job.callback());
+  return intervalJobs.filter((job) => job.ms === ms).length;
+}
+
+/**
+ * 等异步流程跑完。
+ *
+ * 用 setImmediate 而不是 Promise.resolve()：fetch 桩与 api() 之间隔着好几层
+ * async/await，单个微任务轮次刷不完，断言会读到"还没渲染完"的 DOM。
+ * setImmediate 走的是宏任务队列，排在所有微任务之后，正好够用。
+ */
+function flushAsync() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 // 剪贴板桩：记录「复制项目库路径」写进去的内容，供断言检查
 const clipboardWrites = [];
 const navigatorStub = {
@@ -289,6 +320,17 @@ const windowStub = {
   setTimeout: (callback) => {
     idleQueue.push(callback);       // 统一排队，由测试手动 drain
     return idleQueue.length;
+  },
+  // setInterval 的桩：不真的按时间触发，而是登记下来，
+  // 测试用 runIntervals(ms) 手动"到点"，结果才是确定性的。
+  setInterval: (callback, ms) => {
+    intervalSeq += 1;
+    intervalJobs.push({ id: intervalSeq, callback, ms: Number(ms) || 0 });
+    return intervalSeq;
+  },
+  clearInterval: (id) => {
+    const index = intervalJobs.findIndex((job) => job.id === id);
+    if (index >= 0) intervalJobs.splice(index, 1);
   },
   matchMedia: () => ({ matches: false, addEventListener: () => {} }),
   localStorage: localStorageStub,
@@ -435,6 +477,12 @@ const epilogue = `
   syncLayoutVars, syncLayoutTiers, watchViewportForLayout, resetLayout,
   analysisClampReference,
   reserved: PANEL_RESERVED,
+  // 学习报告：使用时长心跳 + 报告汇总 + 导出 Word
+  report: { HEARTBEAT_INTERVAL_MS, LIVE_TICK_MS, LIVE_DRIFT_CAP_SECONDS, REPORT_BASE, USAGE_BASE },
+  reportState,
+  formatClock, renderReportLive, sendHeartbeat, startUsageHeartbeat,
+  currentReportRange, syncReportLinks, loadReport, renderReportWeakList,
+  renderReportPreview, openReportPreview, closeReportPreview, bindReportCard,
 };
 `;
 vm.runInContext(source + epilogue, context, { filename: 'app.js' });
@@ -1774,6 +1822,193 @@ check('错题明细里的时间用的是 formatServerTime（走 UTC 解析）',
   !el.errorLogList.innerHTML.includes('Invalid Date')
   && el.errorLogList.innerHTML.includes(api.formatServerTime('2026-09-19T14:35:12Z')),
   el.errorLogList.innerHTML.slice(0, 120));
+
+/* ---------------------------------------------------------------------------
+   11.7 学习报告：使用时长 + 错题整改 + 导出 Word
+   ------------------------------------------------------------------------- */
+console.log();
+console.log('='.repeat(72));
+console.log('学习报告  记录使用时间 / 统计错题 / 导出 Word 给老师');
+console.log('='.repeat(72));
+
+// ---- 1. 秒数格式化 ----
+check('formatClock：不足 1 小时显示 分:秒',
+  api.formatClock(0) === '00:00' && api.formatClock(75) === '01:15',
+  api.formatClock(75));
+check('formatClock：超过 1 小时显示 时:分:秒',
+  api.formatClock(3725) === '1:02:05', api.formatClock(3725));
+check('formatClock：负数按 0 处理（不出现 -01:00）',
+  api.formatClock(-30) === '00:00', api.formatClock(-30));
+
+// ---- 2. 心跳：POST 到 /usage/heartbeat，并采用服务端的权威值 ----
+queueResponse({ session_id: 7, active_seconds: 600, active_text: '10 分 0 秒' });
+await api.sendHeartbeat();
+const beatCall = findCall('POST', '/api/v1/usage/heartbeat');
+check('心跳打到了 /api/v1/usage/heartbeat（POST）', beatCall !== null,
+  beatCall ? beatCall.url : '没发请求');
+check('心跳采用服务端返回的有效秒数',
+  api.reportState.serverSeconds === 600, String(api.reportState.serverSeconds));
+
+api.renderReportLive();
+check('本次已使用显示成 10:00', el.reportLiveTime.textContent === '10:00',
+  el.reportLiveTime.textContent);
+
+// ---- 3. 本地推进有上限（标签页被挂起后不能无限涨）----
+// 注意不能改 Date.now：vm 沙箱里的 Date 是**另一个 realm** 的内建对象，
+// 改外面这个根本不影响 app.js。改成直接把"上次同步时刻"拨回 2 小时前，
+// 效果等价（真实场景就是笔记本合盖两小时再打开）。
+const savedSyncedAt = api.reportState.syncedAt;
+api.reportState.syncedAt = Date.now() - 2 * 60 * 60 * 1000;
+api.renderReportLive();
+check('心跳停了 2 小时，界面最多只推进 5 分钟（不虚报学习时长）',
+  el.reportLiveTime.textContent === api.formatClock(600 + api.report.LIVE_DRIFT_CAP_SECONDS),
+  el.reportLiveTime.textContent);
+api.reportState.syncedAt = savedSyncedAt;
+
+// ---- 4. 定时器真的挂上了（心跳 60 秒、计时器 1 秒）----
+// startUsageHeartbeat 会立刻发一次心跳，先把响应排上
+queueResponse({ session_id: 7, active_seconds: 600, active_text: '10 分 0 秒' });
+api.startUsageHeartbeat();
+check('startUsageHeartbeat 注册了 60 秒心跳',
+  intervalJobs.some((job) => job.ms === api.report.HEARTBEAT_INTERVAL_MS));
+check('startUsageHeartbeat 注册了 1 秒本地计时器',
+  intervalJobs.some((job) => job.ms === api.report.LIVE_TICK_MS));
+// 再调一次不应重复注册（否则页面放久了会攒出几十个定时器）
+const before = intervalJobs.length;
+queueResponse({ session_id: 7, active_seconds: 600, active_text: '10 分 0 秒' });
+api.startUsageHeartbeat();
+check('重复调用 startUsageHeartbeat 不会重复注册定时器',
+  intervalJobs.length === before, `${before} -> ${intervalJobs.length}`);
+
+// ---- 5. 报告汇总渲染 ----
+api.bindReportCard();
+el.reportRange.value = '30';
+queueResponse({
+  student_id: 'local',
+  generated_at: '2026-09-21T10:00:00Z',
+  range_key: '30',
+  range_label: '最近 30 天',
+  app_version: '0.1.0',
+  usage: {
+    student_id: 'local', range_label: '最近 30 天',
+    total_seconds: 5220, total_text: '1 小时 27 分',
+    session_count: 3, active_days: 3,
+    average_seconds: 1740, average_text: '29 分 0 秒',
+    last_used_at: '2026-09-21T09:00:00Z',
+    daily: [], sessions: [],
+  },
+  errors: {
+    total: 6, listed: 6,
+    weak_points: [
+      { knowledge_point: '循环边界', count: 3, ratio: '50%' },
+      { knowledge_point: '数组下标', count: 2, ratio: '33%' },
+    ],
+    by_type: [], by_language: [],
+    items: [{
+      id: 1, created_at: '2026-09-21T09:30:00Z', language: 'python',
+      filename: 'h.py', error_type: '逻辑错误', knowledge_point: '循环边界',
+      knowledge_points: ['循环边界', '累加'], ai_feedback: '少遍历一个元素',
+      ai_feedback_excerpt: '少遍历一个元素', code_excerpt: 'for i in ...',
+      line_count: 4,
+    }],
+  },
+  suggestions: ['「循环边界」累计错 3 次，建议重做这 3 道题。'],
+});
+await api.loadReport();
+
+check('累计有效时长按接口返回显示', el.reportTotalTime.textContent === '1 小时 27 分',
+  el.reportTotalTime.textContent);
+check('使用天数显示成「3 天」', el.reportDays.textContent === '3 天',
+  el.reportDays.textContent);
+check('错题总数显示成「6 条」', el.reportErrorTotal.textContent === '6 条',
+  el.reportErrorTotal.textContent);
+check('易错知识点条形图渲染出 2 条', el.reportWeakList.innerHTML.split('weak__item').length - 1 === 2);
+check('易错知识点里带上了次数与占比',
+  el.reportWeakList.innerHTML.includes('循环边界')
+  && el.reportWeakList.innerHTML.includes('3 次') && el.reportWeakList.innerHTML.includes('50%'));
+check('提示语说明当前区间', el.reportHint.textContent.includes('最近 30 天'),
+  el.reportHint.textContent);
+
+// ---- 6. 导出链接跟着区间走（浏览器直接下载）----
+check('导出链接指向 /report/word', el.reportDownload.href.includes('/api/v1/report/word'));
+check('导出链接带上当前区间 range=30', el.reportDownload.href.includes('range=30'),
+  el.reportDownload.href);
+
+el.reportRange.value = '7';
+// 关键顺序：loadReport 是 async，但 fetch 会在 fire() 里**同步**发出，
+// 所以响应必须排在 fire 之前 —— 反过来就会撞上"没有为这个请求排队"。
+queueResponse({
+  student_id: 'local', generated_at: '2026-09-21T10:00:00Z',
+  range_key: '7', range_label: '最近 7 天', app_version: '0.1.0',
+  usage: {
+    student_id: 'local', range_label: '最近 7 天', total_seconds: 0, total_text: '0 秒',
+    session_count: 0, active_days: 0, average_seconds: 0, average_text: '0 秒',
+    last_used_at: null, daily: [], sessions: [],
+  },
+  errors: { total: 0, listed: 0, weak_points: [], by_type: [], by_language: [], items: [] },
+  suggestions: ['本区间没有使用记录。'],
+});
+fire(el.reportRange, 'change', {});
+await flushAsync();
+
+check('切区间后导出链接同步变成 range=7',
+  el.reportDownload.href.includes('range=7'), el.reportDownload.href);
+check('弹窗里的导出链接也同步更新',
+  el.reportModalDownload.href.includes('range=7'), el.reportModalDownload.href);
+check('空区间如实说明"没有使用记录"，而不是显示一堆 0',
+  el.reportHint.textContent.includes('没有使用记录'), el.reportHint.textContent);
+check('空区间时不显示易错知识点块', el.reportWeakBox.hidden === true);
+
+// ---- 7. 报告预览弹窗 ----
+el.reportRange.value = '30';
+queueResponse({
+  student_id: 'local', generated_at: '2026-09-21T10:00:00Z',
+  range_key: '30', range_label: '最近 30 天', app_version: '0.1.0',
+  usage: {
+    student_id: 'local', range_label: '最近 30 天', total_seconds: 5220,
+    total_text: '1 小时 27 分', session_count: 3, active_days: 3,
+    average_seconds: 1740, average_text: '29 分 0 秒',
+    last_used_at: null, daily: [], sessions: [],
+  },
+  errors: {
+    total: 1, listed: 1,
+    weak_points: [{ knowledge_point: '循环边界', count: 3, ratio: '50%' }],
+    by_type: [], by_language: [],
+    items: [{
+      id: 1, created_at: '2026-09-21T09:30:00Z', language: 'python',
+      filename: 'h.py', error_type: '逻辑错误', knowledge_point: '循环边界',
+      knowledge_points: ['循环边界'], ai_feedback: '少遍历一个元素',
+      ai_feedback_excerpt: '少遍历一个元素', code_excerpt: 'x', line_count: 3,
+    }],
+  },
+  suggestions: ['「循环边界」累计错 3 次。'],
+});
+await api.openReportPreview();
+
+check('点「查看报告内容」会打开弹窗',
+  !el.reportModal.classList.contains('hidden'));
+const previewHtml = el.reportModalBody.innerHTML;
+check('弹窗里有三个章节',
+  previewHtml.includes('一、使用情况') && previewHtml.includes('二、错题整改情况')
+  && previewHtml.includes('三、学习建议'));
+check('弹窗里带上了学习建议原文', previewHtml.includes('累计错 3 次'));
+check('弹窗里有错题明细表', previewHtml.includes('report-view__table'));
+check('弹窗里列出了知识点', previewHtml.includes('循环边界'));
+
+api.closeReportPreview();
+check('关闭后弹窗重新隐藏', el.reportModal.classList.contains('hidden'));
+
+// Esc 也能关
+el.reportModal.classList.remove('hidden');
+fireDocument('keydown', { key: 'Escape' });
+check('按 Esc 关闭报告弹窗', el.reportModal.classList.contains('hidden'));
+
+// ---- 8. 点遮罩关闭，点弹窗本体不关 ----
+el.reportModal.classList.remove('hidden');
+fire(el.reportModal, 'click', { target: el.reportModalBody });
+check('点弹窗本体不会误关', !el.reportModal.classList.contains('hidden'));
+fire(el.reportModal, 'click', { target: el.reportModal });
+check('点遮罩可以关闭', el.reportModal.classList.contains('hidden'));
 
 /* ---------------------------------------------------------------------------
    12. 汇总

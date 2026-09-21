@@ -1038,6 +1038,170 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   gap: 8px;
 }
 
+/* --------------------------------------------------------------------------
+   学习报告预览弹窗：内容比确认弹窗多得多，所以更宽，并且自己滚动。
+   高度用 min() 卡住：小屏上不会超出视口，报告再长也是弹窗内部滚动，
+   不会把"关闭"按钮顶到屏幕外去。
+   -------------------------------------------------------------------------- */
+.modal__box--wide {
+  width: min(720px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal__scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  margin: 0 0 14px;
+  padding-right: 4px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* --------------------------------------------------------------------------
+   侧边栏「④ 学习报告」卡片
+   -------------------------------------------------------------------------- */
+.report__live {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.report__live-label { font-size: 12.5px; color: var(--text-dim); }
+
+/* 用等宽数字，秒数跳动时宽度不变，右边的标签不会左右抖 */
+.report__live-value {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+}
+
+.report__range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.report__range-label {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.report__range .input { flex: 1 1 auto; }
+
+.report__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.report__stat {
+  padding: 8px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  text-align: center;
+}
+
+.report__stat dt {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+
+.report__stat dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.report__subtitle {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.report__hint {
+  margin: 8px 0 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.6;
+}
+
+.report__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 导出按钮是 <a>，要让它和旁边真正的 <button> 长得一模一样 */
+.report__actions .btn {
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+/* 报告预览里的分节标题 */
+.report-view__section {
+  margin: 14px 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+
+.report-view__tip {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.report-view__kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  font-size: 12.5px;
+}
+
+.report-view__kv dt { color: var(--text-dim); }
+.report-view__kv dd { margin: 0; font-weight: 600; }
+
+.report-view__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.report-view__table th,
+.report-view__table td {
+  border: 1px solid var(--line);
+  padding: 5px 7px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-view__table th {
+  background: var(--bg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.report-view__table td.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* 提示块（用于"没有发现错误"这类正向反馈） */
 .callout {
   padding: 10px 12px;

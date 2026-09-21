@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,22 +129,100 @@ class TutorService:
 
     @staticmethod
     async def weak_points(
-        session: AsyncSession, *, student_id: str, limit: int = 5
+        session: AsyncSession,
+        *,
+        student_id: str,
+        limit: int = 5,
+        since: datetime | None = None,
     ) -> list[tuple[str, int]]:
         """聚合易错知识点，返回 [(知识点, 次数)]，按次数倒序。
 
         这是错题本相对流水账的核心价值：学生看到的不是"我错了 20 次"，
         而是"循环边界错了 6 次、数组下标错了 4 次"。
+
+        `since` 用于学习报告的"最近 N 天"口径；不传就是全部历史
+        （前端错题本卡片要的正是全部历史）。
         """
+        condition = StudentErrorLog.student_id == student_id
+        if since is not None:
+            condition = condition & (StudentErrorLog.created_at >= since)
         stmt = (
             select(StudentErrorLog.knowledge_point, func.count(StudentErrorLog.id))
-            .where(StudentErrorLog.student_id == student_id)
+            .where(condition)
             .group_by(StudentErrorLog.knowledge_point)
             .order_by(func.count(StudentErrorLog.id).desc())
             .limit(limit)
         )
         rows = (await session.execute(stmt)).all()
         return [(str(name), int(count)) for name, count in rows]
+
+    @staticmethod
+    async def count_errors_since(
+        session: AsyncSession, *, student_id: str, since: datetime | None = None
+    ) -> int:
+        """某个时间区间内的错题条数（学习报告用）。"""
+        condition = StudentErrorLog.student_id == student_id
+        if since is not None:
+            condition = condition & (StudentErrorLog.created_at >= since)
+        stmt = select(func.count(StudentErrorLog.id)).where(condition)
+        return int((await session.execute(stmt)).scalar_one())
+
+    @staticmethod
+    async def group_by_field(
+        session: AsyncSession,
+        *,
+        student_id: str,
+        field: str,
+        since: datetime | None = None,
+        limit: int = 10,
+    ) -> list[tuple[str, int]]:
+        """按某个字段分组计数，次数倒序。用于「错误类型分布」「语言分布」。
+
+        `field` 只接受白名单里的列名。**不把它拼进 SQL 字符串**，
+        而是映射到 ORM 列对象——否则这里就是一个注入点
+        （哪怕目前调用方都是写死的，也不该留下这种形状的代码）。
+        """
+        columns = {
+            "error_type": StudentErrorLog.error_type,
+            "language": StudentErrorLog.language,
+            "knowledge_point": StudentErrorLog.knowledge_point,
+        }
+        if field not in columns:
+            raise ValueError(f"不支持的分组字段：{field}")
+        column = columns[field]
+
+        condition = StudentErrorLog.student_id == student_id
+        if since is not None:
+            condition = condition & (StudentErrorLog.created_at >= since)
+        stmt = (
+            select(column, func.count(StudentErrorLog.id))
+            .where(condition)
+            .group_by(column)
+            .order_by(func.count(StudentErrorLog.id).desc())
+            .limit(limit)
+        )
+        rows = (await session.execute(stmt)).all()
+        return [(str(name), int(count)) for name, count in rows]
+
+    @staticmethod
+    async def list_errors_since(
+        session: AsyncSession,
+        *,
+        student_id: str,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[StudentErrorLog]:
+        """按时间倒序取区间内的错题明细（学习报告的明细表用）。"""
+        condition = StudentErrorLog.student_id == student_id
+        if since is not None:
+            condition = condition & (StudentErrorLog.created_at >= since)
+        stmt = (
+            select(StudentErrorLog)
+            .where(condition)
+            .order_by(StudentErrorLog.created_at.desc(), StudentErrorLog.id.desc())
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     @staticmethod
     async def list_errors(

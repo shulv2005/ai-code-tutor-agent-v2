@@ -47,6 +47,7 @@ from fastapi import (
 
 from app.agents.tutor_agent import TutorAgent, format_error_history
 from app.api.deps import ApiKeyManagerDep, AppSettingsDep, DbSession, TutorAgentDep
+from app.core import identity
 from app.core.api_key_manager import SESSION_HEADER, ApiKeyManager
 from app.core.config import Settings
 from app.core.llm_client import (
@@ -92,21 +93,13 @@ router = APIRouter()
 # 单次上传的代码大小上限：学生作业不会很大，超过基本是误传了文件
 MAX_CODE_BYTES = 512 * 1024
 
-# 学生身份相关的两个常量。
-#
-# **页面不再要求填学号**：本项目是"在自己电脑上跑"的单机版，
-# 一个浏览器就一个学生，错题本不需要区分人。因此所有记录都归档到
-# `LOCAL_STUDENT_ID` 这个固定身份下。
-#
-# 为什么**保留**数据库的 student_id 列与这个可选参数、而不是把列删掉：
-#   · 列留着，"以后要支持多个学生"只需要加回一个输入框，不用改表、不用写迁移；
-#   · HTTP 参数留着，需求文档里的 `POST /api/analyze` JSON 契约
-#     （`{student_id, language, code_content}`）就仍然成立，
-#     脚本/第三方传了学号也能正常按人分开归档。
-LOCAL_STUDENT_ID = "local"
-
-# 仍然接受这个请求头（可选）：传了就按传的归档，不传就是本地身份。
-STUDENT_HEADER = "X-Student-Id"
+# 学生身份相关的常量与解析函数都放在 app/core/identity.py ——
+# report / usage / app.main 都要用，放在端点模块里会让它们互相 import。
+# 这里只做转出，保证 `from ...endpoints.tutor import LOCAL_STUDENT_ID` 这类
+# 老写法（以及第三方脚本）继续可用。
+LOCAL_STUDENT_ID = identity.LOCAL_STUDENT_ID
+STUDENT_HEADER = identity.STUDENT_HEADER
+_resolve_student_id = identity.resolve_student_id
 
 # 每次诊断喂给模型的历史错题条数（需求指定 5-10 条）。
 # 取 8 是因为：少于 5 条总结不出规律，多于 10 条既费 token 又会让
@@ -130,25 +123,6 @@ def _resolve_language(filename: str) -> str:
             detected = language
             break
     return detected or "unknown"
-
-
-def _resolve_student_id(*candidates: str | None) -> str:
-    """决定这次记录归到谁名下。
-
-    单机版页面上没有"学号"这个输入框，所以正常情况下所有候选都是空的，
-    返回固定身份 `local`。
-
-    但仍然保留候选参数：`POST /api/analyze` 这个兼容别名按需求文档的契约
-    可以带 `student_id`，脚本批量给一个班跑的时候传进来就能按人分开归档——
-    功能是免费保留的（表里本来就有这一列），只是页面上不再要求。
-    """
-    for value in candidates:
-        text = (value or "").strip()
-        if text:
-            # 截断而不是报错：宁可存一个被截断的标识，
-            # 也不要因为多打了一个空格/换行就让整个诊断失败。
-            return text[:64]
-    return LOCAL_STUDENT_ID
 
 
 def _analyze(filename: str, code: str) -> AnalyzeResponse:

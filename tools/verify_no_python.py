@@ -205,25 +205,61 @@ check(
     else "",
 )
 
-# 哈希校验：真文件要过，被改坏的文件要拦
-sample = os.environ.get("AI_TUTOR_TEST_INSTALLER", "")
+# 哈希校验：正例用**临时造的文件**，不用真安装包。
+#
+# 早先这里要求环境变量提供一个真实的 python-3.11.9-amd64.exe，结果是
+# "跑几项"会随机器而变（没下载过安装包的机器就少一项），验收数字不稳定，
+# 也容易被当成"跳过等于通过"。现在改成：算出临时文件的真实哈希，
+# 拼一个与它匹配的 Release 表 -> 必须通过；改坏一个字节 -> 必须失败。
+# 走的是同一段校验代码，但完全不依赖外部文件。
 hash_script = f"""
 . '{LIB}'
-$rel = Get-InstallerRelease -Architecture 'AMD64'
-$path = '{sample}'
-$problem = Test-InstallerHash -Path $path -Release $rel
-if ($null -eq $problem) {{ Write-Host 'HASH_OK' }} else {{ Write-Host 'HASH_BAD' }}
+$probe = Join-Path $env:TEMP 'ai-tutor-hash-probe.bin'
+[System.IO.File]::WriteAllBytes($probe, [byte[]](1..64))
+
+$release = @{{
+    Sha256 = (Get-FileHash $probe -Algorithm SHA256).Hash.ToLower()
+    Md5    = (Get-FileHash $probe -Algorithm MD5).Hash.ToLower()
+}}
+if ($null -eq (Test-InstallerHash -Path $probe -Release $release)) {{
+    Write-Host 'HASH_OK'
+}} else {{
+    Write-Host 'HASH_BAD'
+}}
+
+# 改坏一个字节：必须被拦下来
+$bytes = [System.IO.File]::ReadAllBytes($probe)
+$bytes[10] = $bytes[10] -bxor 0xFF
+[System.IO.File]::WriteAllBytes($probe, $bytes)
+if ($null -ne (Test-InstallerHash -Path $probe -Release $release)) {{
+    Write-Host 'TAMPER_REJECTED'
+}} else {{
+    Write-Host 'TAMPER_ACCEPTED'
+}}
+Remove-Item $probe -Force -ErrorAction SilentlyContinue
 """
+proc = run_ps(hash_script)
+hash_out = proc.stdout.decode("utf-8", errors="replace")
+check("哈希匹配的文件通过校验", "HASH_OK" in hash_out)
+check("被改动过一个字节的文件被拒绝", "TAMPER_REJECTED" in hash_out)
+
+# 额外（可选）：如果你手边有一个真实的官方安装包，可以这样再验一遍真文件
+sample = os.environ.get("AI_TUTOR_TEST_INSTALLER", "")
 if sample and Path(sample).exists():
-    proc = run_ps(hash_script)
+    real_script = f"""
+. '{LIB}'
+$rel = Get-InstallerRelease -Architecture 'AMD64'
+$problem = Test-InstallerHash -Path '{sample}' -Release $rel
+if ($null -eq $problem) {{ Write-Host 'REAL_OK' }} else {{ Write-Host 'REAL_BAD' }}
+"""
+    proc = run_ps(real_script)
     check(
-        "真安装包哈希校验通过",
-        "HASH_OK" in proc.stdout.decode("utf-8", errors="replace"),
+        "（额外）真实官方安装包哈希校验通过",
+        "REAL_OK" in proc.stdout.decode("utf-8", errors="replace"),
     )
 else:
-    print("  --   跳过哈希正例（未提供 AI_TUTOR_TEST_INSTALLER；")
-    print("       下载一次官方安装包后这样跑：")
-    print("       $env:AI_TUTOR_TEST_INSTALLER='<python-3.11.9-amd64.exe>'; python tools/verify_no_python.py）")
+    print("  --   额外项：设 AI_TUTOR_TEST_INSTALLER 指向一个真实的")
+    print("       python-3.11.9-amd64.exe，可以再验一遍真文件的哈希与签名")
 
 sig_script = f"""
 . '{LIB}'

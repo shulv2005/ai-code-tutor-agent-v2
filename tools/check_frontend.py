@@ -334,6 +334,57 @@ def check_hidden_toggle(page: dict, html: str, js: str, css: str) -> None:
         print(f"      · {item}")
 
 
+def check_report_export(page: dict, html: str, js: str) -> None:
+    """3.8 学习报告导出：必须走浏览器原生下载，且区间参数来自下拉框。
+
+    需求原文是「导出的 Word 从浏览器里直接下载」。有两种实现方式：
+
+      · `<a href=... download>` —— 浏览器自己发请求、自己存盘，文件名由
+        响应头的 Content-Disposition 决定（后端已经带了中文文件名）；
+      · JS 拿 ArrayBuffer 再 `URL.createObjectURL` 存盘 —— 也能用，但要
+        自己解析 Content-Disposition 才能拿到中文文件名，多写几十行还容易错。
+
+    这里锁死第一种。判据放在**静态 HTML** 上而不是行为测试里：
+    `<a download>` 是标记上的事实，DOM 桩里根本没有 download 属性，
+    在行为测试里断言等于在测桩本身。
+    """
+    print()
+    print("=" * 72)
+    print(f"3.8 学习报告导出（{page['name']}：浏览器原生下载）")
+    print("=" * 72)
+
+    anchor = re.search(r"<a\b[^>]*id=\"reportDownload\"[^>]*>", html)
+    ok_anchor = anchor is not None
+    print(f"  导出入口是 <a> 标签 : {'是 ✓' if ok_anchor else '否 ✗'}")
+    if not ok_anchor:
+        failures.append(f"{page['name']} 找不到 id=reportDownload 的 <a> 导出入口")
+        return
+
+    tag = anchor.group(0)
+    has_download = "download" in tag
+    print(f"  带 download 属性（不跳转、直接存盘） : {'是 ✓' if has_download else '否 ✗'}")
+    if not has_download:
+        failures.append("导出链接缺少 download 属性，点击会在浏览器里打开而不是下载")
+
+    points_to_api = "/api/v1/report/word" in tag
+    print(f"  指向 /api/v1/report/word : {'是 ✓' if points_to_api else '否 ✗'}")
+    if not points_to_api:
+        failures.append("导出链接没有指向 /api/v1/report/word")
+
+    # 区间参数必须由 JS 跟着下拉框同步，不能写死
+    syncs = "reportDownload.href" in js and "reportModalDownload.href" in js
+    print(f"  两个导出链接都由 JS 同步区间 : {'是 ✓' if syncs else '否 ✗'}")
+    if not syncs:
+        failures.append("切换统计区间时导出链接没有同步（下载的会永远是一个区间）")
+
+    # 后端会返回中文文件名，前端不能自作主张改文件名（会覆盖掉后端的命名）
+    overrides_name = re.search(r"reportDownload\.download\s*=", js)
+    print(f"  前端不覆盖文件名（让后端 Content-Disposition 说了算） : "
+          f"{'是 ✓' if not overrides_name else '否 ✗'}")
+    if overrides_name:
+        failures.append("前端覆盖了下载文件名，会盖掉后端带学生标识的命名")
+
+
 def read_base(js: str, name: str) -> str:
     """从 JS 里读出接口前缀常量（避免两边写死后悄悄对不上）。"""
     found = re.search(rf"""{name}\s*=\s*['"]([^'"]+)['"]""", js)
@@ -523,6 +574,7 @@ def main() -> int:
         check_layout_contract(page, css, js)
         check_css_var_contract(page, css, js)
         check_hidden_toggle(page, html, js, css)
+        check_report_export(page, html, js)
         check_api_paths(page, js, operations)
         if index < len(PAGES) - 1:
             print()

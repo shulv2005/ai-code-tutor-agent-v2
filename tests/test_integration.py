@@ -24,6 +24,10 @@ from app.main import FRONTEND_PAGES, create_app, frontend_page_urls
 EXPECTED_MODULES = {
     "health": 2,
     "tutor": 8,
+    # 使用时长：3 个接口（心跳 / 本次 / 汇总）
+    "usage": 3,
+    # 学习报告：数据 + 导出 Word
+    "report": 2,
     "library": 3,
     "files": 2,
     "check": 1,
@@ -38,6 +42,8 @@ EXPECTED_MODULES = {
 EXPECTED_TABLES = {
     # 错题本
     "student_error_logs",
+    # 使用时长（每次双击 start.bat 一条，前端心跳累加）
+    "usage_sessions",
     # 三个学习功能的历史
     "code_check_records",
     "code_fix_records",
@@ -67,7 +73,7 @@ def _module_counts(spec: dict) -> dict[str, int]:
 # 1. 模块整合
 # ===========================================================================
 def test_all_modules_are_registered(spec: dict) -> None:
-    """9 个模块必须全部挂上——少一个不会报错，只会在访问时 404。"""
+    """11 个模块必须全部挂上——少一个不会报错，只会在访问时 404。"""
     counts = _module_counts(spec)
     missing = {
         tag: counts.get(tag, 0)

@@ -155,3 +155,70 @@ CREATE TABLE IF NOT EXISTS student_error_logs (
 
 -- 4) 删除一条错题（**必须带 student_id**，否则任何学生都能凭 id 删别人的错题）
 --    DELETE FROM student_error_logs WHERE id = ? AND student_id = ?;
+
+
+-- ============================================================================
+--  四、使用时长表 usage_sessions —— 建表 SQL
+-- ============================================================================
+--
+--  用途：记录"这个学生用了多久"。每次双击 start.bat 启动服务时写一条，
+--        前端页面每隔 60 秒发一次心跳往前推有效时长；老师看的学习报告
+--        里"累计有效使用时长"就是这个表的汇总。
+--
+--  字段解释（与 app/models/usage.py 一一对应）：
+--      started_at       服务启动时间 = 学生双击 start.bat 的时间
+--      last_seen_at     最后一次收到前端心跳的时间
+--      active_seconds   ★ 累计有效秒数：每次心跳把「距上次心跳的间隔」截断后
+--                       累加进来。单段最多计 300 秒（MAX_HEARTBEAT_GAP_SECONDS）
+--      ended_at         正常关闭时写入；进程被强杀 / 断电时为 NULL
+--      pid / app_version  排查用：哪一次是哪个进程、哪个版本产生的
+--
+--  为什么时长要"累加"而不是每次现算 (last_seen_at - started_at)：
+--  浏览器标签页会被挂起（省电模式、合上笔记本盖），恢复后第一个心跳的间隔
+--  可能是几小时。现算会把这几个小时算成学习时长，而老师正是拿这个数字判断
+--  学生有没有真的在练。累加 + 单段截断把这类误差封顶在 5 分钟——
+--  "宁可少算，不能多算"。
+--
+--  只有一张索引：主力查询是「某学生最近 N 次使用」（按学生过滤 + 时间倒序）。
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS usage_sessions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id      VARCHAR(64) NOT NULL,
+    started_at      DATETIME    NOT NULL,
+    last_seen_at    DATETIME    NOT NULL,
+    active_seconds  INTEGER     NOT NULL DEFAULT 0,
+    ended_at        DATETIME    DEFAULT NULL,
+    pid             INTEGER     DEFAULT NULL,
+    app_version     VARCHAR(32) DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_usage_sessions_student_started
+    ON usage_sessions (student_id, started_at);
+
+-- MySQL 版（与上面等价，只是方言不同；注意 active_seconds 不是保留字，可直接用）
+/*
+CREATE TABLE IF NOT EXISTS usage_sessions (
+    id              BIGINT      NOT NULL AUTO_INCREMENT,
+    student_id      VARCHAR(64) NOT NULL,
+    started_at      DATETIME(6) NOT NULL,
+    last_seen_at    DATETIME(6) NOT NULL,
+    active_seconds  INT         NOT NULL DEFAULT 0,
+    ended_at        DATETIME(6) DEFAULT NULL,
+    pid             INT         DEFAULT NULL,
+    app_version     VARCHAR(32) DEFAULT NULL,
+    PRIMARY KEY (id),
+    KEY ix_usage_sessions_student_started (student_id, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+*/
+
+-- 5) 某学生区间内的总有效使用时长（学习报告「累计有效使用时长」）
+--    SELECT COALESCE(SUM(active_seconds), 0) FROM usage_sessions
+--     WHERE student_id = ? AND started_at >= ?;
+
+-- 6) 某学生用过哪几天（学习报告「使用天数」；按本地日期去重，跨零点算两天）
+--    SELECT DATE(started_at, 'localtime') AS day, SUM(active_seconds)
+--      FROM usage_sessions
+--     WHERE student_id = ?
+--     GROUP BY day
+--     ORDER BY day DESC;

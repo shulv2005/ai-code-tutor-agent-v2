@@ -143,6 +143,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.ensure_directories()
     await init_db()
 
+    # 「点击 start.bat 记录使用时间」就落在这里：服务被启动的那一刻，
+    # 就是学生开始使用的那一刻。用完这条记录由前端心跳续期
+    # （见 app/services/usage_service.py 里对"为什么用心跳"的说明）。
+    app.state.usage_session_id = await _start_usage_session(settings)
+
     logger.info(
         "应用启动完成: name=%s env=%s version=%s llm_configured=%s",
         settings.app.name,
@@ -167,9 +172,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await _end_usage_session(app.state.usage_session_id)
         await close_llm_clients()
         await dispose_engine()
         logger.info("应用已关闭，数据库连接池与 LLM 连接已释放")
+
+
+async def _start_usage_session(settings: Settings) -> int | None:
+    """开一条使用记录。失败只告警，绝不阻断服务启动。
+
+    单独用一次短会话：lifespan 里还没有请求上下文，拿不到 `DbSession` 依赖，
+    所以直接向会话工厂要一个。
+    """
+    from app.core.database import get_session
+    from app.core.identity import LOCAL_STUDENT_ID
+    from app.services.usage_service import UsageService
+
+    try:
+        async with get_session() as session:
+            return await UsageService.start_session(
+                session,
+                student_id=LOCAL_STUDENT_ID,
+                app_version=settings.app.version,
+            )
+    except Exception:  # noqa: BLE001 - 统计失败不该让学生用不了系统
+        logger.warning("本次使用记录未能写入，使用时长统计将不可用", exc_info=True)
+        return None
+
+
+async def _end_usage_session(session_id: int | None) -> None:
+    """收尾本次使用记录（把最后一段时长累加进去并写 ended_at）。"""
+    if session_id is None:
+        return
+    from app.core.database import get_session
+    from app.services.usage_service import UsageService
+
+    try:
+        async with get_session() as session:
+            await UsageService.end_session(session, session_id=session_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("本次使用记录未能在关闭时收尾", exc_info=True)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

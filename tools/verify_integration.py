@@ -55,12 +55,18 @@ EXPECTED_MODULES: dict[str, int] = {
     "auth": 3,
     # 模型清单：前端下拉框的数据源（不含 Key）
     "models": 1,
+    # 使用时长：heartbeat（心跳续期）/ current（本次时长）/ summary（区间汇总）
+    "usage": 3,
+    # 学习报告：summary（数据）+ word（导出 Word 给老师）
+    "report": 2,
 }
 
 # 期望存在的数据库表（每个功能模块的落库表）
 EXPECTED_TABLES = {
     # 错题本
     "student_error_logs",
+    # 使用时长：每次双击 start.bat 一条，前端心跳累加有效时长
+    "usage_sessions",
     # 三个学习功能的历史
     "code_check_records",
     "code_fix_records",
@@ -98,6 +104,13 @@ EXPECTED_SERVICE_FILES = [
     "app/api/v1/endpoints/files.py",
     "app/api/v1/endpoints/library.py",
     "app/api/v1/endpoints/tutor.py",
+    # 使用时长与学习报告（记录学习时长、导出 Word 给老师）
+    "app/api/v1/endpoints/usage.py",
+    "app/api/v1/endpoints/report.py",
+    "app/services/usage_service.py",
+    "app/services/report_service.py",
+    # 手写 OOXML 生成 .docx，刻意不引 python-docx（那会连带装 lxml）
+    "app/services/report_docx.py",
     "app/services/code_checker.py",
     "app/services/code_fixer.py",
     "app/services/comment_generator.py",
@@ -105,6 +118,7 @@ EXPECTED_SERVICE_FILES = [
     # 错题本：记录服务 + ORM 模型 + 建表 SQL 参考 + 设计文档
     "app/services/tutor_service.py",
     "app/models/error_log.py",
+    "app/models/usage.py",
     "app/models/base.py",
     "docs/student_error_logs.sql",
     "docs/错题本与举一反三-设计与数据流.md",
