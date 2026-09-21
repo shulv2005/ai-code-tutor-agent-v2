@@ -160,7 +160,7 @@ function register(id, rect) {
   // 模型设置（选模型 + 填自己的 API Key）
   'modelCard', 'modelSelect', 'modelApiKey', 'toggleKeyVisible', 'modelHint',
   'modelStatus', 'modelStatusText', 'saveModelKey', 'clearModelKey', 'refreshModels',
-  'aiBadge', 'langBadge', 'resetLayout',
+  'aiBadge', 'langBadge', 'resetLayout', 'topbarUsage', 'topbarExport',
   'codeTitle', 'codeLangBadge', 'code-placeholder', 'codeDropzone', 'codeBlock',
   'codeContent', 'clearCodeBtn',
   // 在线编辑
@@ -1852,6 +1852,10 @@ check('心跳采用服务端返回的有效秒数',
 api.renderReportLive();
 check('本次已使用显示成 10:00', el.reportLiveTime.textContent === '10:00',
   el.reportLiveTime.textContent);
+// 顶栏那个徽章必须跟着同一个数走。左栏卡片在滚动区最底下，
+// 只在那边显示等于没有 —— 用户看不到就当作功能没做（真实反馈）。
+check('顶栏徽章同步显示本次使用时长',
+  el.topbarUsage.textContent === '本次 10:00', el.topbarUsage.textContent);
 
 // ---- 3. 本地推进有上限（标签页被挂起后不能无限涨）----
 // 注意不能改 Date.now：vm 沙箱里的 Date 是**另一个 realm** 的内建对象，
@@ -1933,6 +1937,8 @@ check('提示语说明当前区间', el.reportHint.textContent.includes('最近 
 check('导出链接指向 /report/word', el.reportDownload.href.includes('/api/v1/report/word'));
 check('导出链接带上当前区间 range=30', el.reportDownload.href.includes('range=30'),
   el.reportDownload.href);
+check('顶栏导出按钮也指向 /report/word',
+  el.topbarExport.href.includes('/api/v1/report/word'), el.topbarExport.href);
 
 el.reportRange.value = '7';
 // 关键顺序：loadReport 是 async，但 fetch 会在 fire() 里**同步**发出，
@@ -1953,6 +1959,8 @@ await flushAsync();
 
 check('切区间后导出链接同步变成 range=7',
   el.reportDownload.href.includes('range=7'), el.reportDownload.href);
+check('顶栏导出按钮也跟着切区间',
+  el.topbarExport.href.includes('range=7'), el.topbarExport.href);
 check('弹窗里的导出链接也同步更新',
   el.reportModalDownload.href.includes('range=7'), el.reportModalDownload.href);
 check('空区间如实说明"没有使用记录"，而不是显示一堆 0',

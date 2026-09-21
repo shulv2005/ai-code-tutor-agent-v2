@@ -63,6 +63,27 @@
       -->
       <button class="btn btn--mini" id="resetLayout" type="button"
               title="把左栏宽度、代码区高度、上下分栏都恢复成默认值">重置布局</button>
+
+      <!--
+        本次已使用时长：和导出按钮一样放顶栏。
+        「记录使用时间」这件事如果只在左栏最底下那张卡片里显示，
+        学生同样看不到 —— 而看着数字往上走本身就是"我在学"的反馈。
+        数值由 JS 每秒推进，来源是后端的心跳累加（见 usage_service.py）。
+      -->
+      <span class="badge badge--muted" id="topbarUsage" title="本次使用时长（只有页面开着才累计）">
+        本次 --:--
+      </span>
+
+      <!--
+        导出 Word 学习报告：**放在顶栏**而不是只放在左栏那张卡片里。
+        左栏是纵向滚动区，② 本地项目库的文件列表一长，最下面的卡片就看不见了 ——
+        功能明明做了却找不到，等于没做。顶栏常驻，任何窗口尺寸下都在。
+        href 由 JS 按当前统计区间拼（见 syncReportLinks）。
+      -->
+      <a class="btn btn--mini btn--primary" id="topbarExport"
+         href="/api/v1/report/word?range=30" download
+         title="导出「使用时长 + 错题整改」的 Word 学习报告，交给老师">导出学习报告</a>
+
       <!-- 语言支持提示：由 JS 填入，例如「支持 C / Java / Python」 -->
       <span class="badge badge--muted" id="langBadge">正在检测服务…</span>
       <!-- AI 可用性徽章：ai-ok 表示可用，ai-off 表示未配置 -->

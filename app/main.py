@@ -264,6 +264,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if frontend_dir.is_dir():
         app.mount("/ui", StaticFiles(directory=str(frontend_dir), html=True), name="ui")
 
+        # 4.1) 前端静态文件必须"每次都回头问一下服务端"。
+        #
+        # StaticFiles 只给 ETag / Last-Modified，**不给 Cache-Control**，
+        # 浏览器于是按启发式规则自行决定新鲜期：页面在缓存有效期内根本不会
+        # 发请求，服务端换了内容它也照旧显示老的。真实后果就是——
+        # 新版本加了「导出学习报告」按钮，学生刷新了页面还是看不到，
+        # 以为是功能没做（这个坑实测踩过：服务端返回的 HTML 里明明有新按钮，
+        # 浏览器渲染出来的还是旧页面）。
+        #
+        # `no-cache` 不是"不缓存"，而是"用之前先验证"：内容没变时服务端回 304，
+        # 仍然很快；变了就必然拿到新的。对一个双击 start.bat 就要用的本地服务，
+        # 这点往返开销完全可以忽略。
+        @app.middleware("http")
+        async def revalidate_frontend(request: Request, call_next: Any) -> Response:
+            response = await call_next(request)
+            if request.url.path.startswith("/ui"):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
+
         @app.get("/", include_in_schema=False)
         async def index_redirect() -> RedirectResponse:
             """根路径直接跳到前端页面，省得学生手动输地址。"""

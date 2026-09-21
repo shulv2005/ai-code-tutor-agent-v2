@@ -366,16 +366,40 @@ def check_report_export(page: dict, html: str, js: str) -> None:
     if not has_download:
         failures.append("导出链接缺少 download 属性，点击会在浏览器里打开而不是下载")
 
+    # 顶栏那个常驻入口。左栏是纵向滚动区，卡片在列表长了以后会被顶到看不见，
+    # 只放那里等于没做（真实反馈："页面上没有导出 Word 的功能"）。
+    topbar = re.search(r"<a\b[^>]*id=\"topbarExport\"[^>]*>", html)
+    print(f"  顶栏有常驻导出入口 : {'是 ✓' if topbar else '否 ✗'}")
+    if not topbar:
+        failures.append("顶栏没有常驻的导出入口，左栏卡片滚动后会被埋掉")
+    else:
+        topbar_tag = topbar.group(0)
+        if "download" not in topbar_tag:
+            failures.append("顶栏导出入口缺少 download 属性")
+        if "/api/v1/report/word" not in topbar_tag:
+            failures.append("顶栏导出入口没有指向 /api/v1/report/word")
+        print(f"  顶栏入口带 download 且指向导出接口 : "
+              f"{'是 ✓' if 'download' in topbar_tag and '/api/v1/report/word' in topbar_tag else '否 ✗'}")
+
+    # 顶栏的「本次已使用」：记录使用时间这件事必须能在常驻区域看到
+    has_usage_badge = 'id="topbarUsage"' in html
+    print(f"  顶栏有本次使用时长 : {'是 ✓' if has_usage_badge else '否 ✗'}")
+    if not has_usage_badge:
+        failures.append("顶栏没有显示本次使用时长")
+
     points_to_api = "/api/v1/report/word" in tag
     print(f"  指向 /api/v1/report/word : {'是 ✓' if points_to_api else '否 ✗'}")
     if not points_to_api:
         failures.append("导出链接没有指向 /api/v1/report/word")
 
     # 区间参数必须由 JS 跟着下拉框同步，不能写死
-    syncs = "reportDownload.href" in js and "reportModalDownload.href" in js
-    print(f"  两个导出链接都由 JS 同步区间 : {'是 ✓' if syncs else '否 ✗'}")
+    syncs = all(
+        key in js
+        for key in ("topbarExport.href", "reportDownload.href", "reportModalDownload.href")
+    )
+    print(f"  三个导出入口都由 JS 同步区间 : {'是 ✓' if syncs else '否 ✗'}")
     if not syncs:
-        failures.append("切换统计区间时导出链接没有同步（下载的会永远是一个区间）")
+        failures.append("切换统计区间时导出链接没有全部同步（会下载到不同区间的报告）")
 
     # 后端会返回中文文件名，前端不能自作主张改文件名（会覆盖掉后端的命名）
     overrides_name = re.search(r"reportDownload\.download\s*=", js)

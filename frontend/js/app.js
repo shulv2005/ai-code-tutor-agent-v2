@@ -159,6 +159,11 @@ const el = {
   aiBadge: document.getElementById('aiBadge'),
   langBadge: document.getElementById('langBadge'),
   resetLayout: document.getElementById('resetLayout'),
+  // 顶栏常驻的「本次已使用」与「导出学习报告」。
+  // 左栏那张 ④ 学习报告 卡片是详情视图，但它在滚动区最底下，
+  // 关键入口必须同时出现在顶栏，否则功能做了也找不到。
+  topbarUsage: document.getElementById('topbarUsage'),
+  topbarExport: document.getElementById('topbarExport'),
 
   // 代码区
   codeTitle: document.getElementById('codeTitle'),
@@ -2077,12 +2082,16 @@ function formatClock(totalSeconds) {
 
 /** 刷新「本次已使用」的显示（不请求，纯本地推进） */
 function renderReportLive() {
-  if (!el.reportLiveTime) return;
   const elapsed = (Date.now() - reportState.syncedAt) / 1000;
   // 本地推进量也按后端同样的口径封顶：万一心跳一直失败（服务挂了），
   // 显示值最多比最后一次同步多 5 分钟，不会无限涨下去骗人。
   const drift = Math.min(Math.max(0, elapsed), LIVE_DRIFT_CAP_SECONDS);
-  el.reportLiveTime.textContent = formatClock(reportState.serverSeconds + drift);
+  const clock = formatClock(reportState.serverSeconds + drift);
+  // 两处显示同一个数：左栏卡片（大号）与顶栏徽章（常驻可见）。
+  // 用两个元素而不是只留一个，是因为左栏那张卡片在滚动区最底下 ——
+  // 只在那边显示，学生根本看不到计时在走。
+  if (el.reportLiveTime) el.reportLiveTime.textContent = clock;
+  if (el.topbarUsage) el.topbarUsage.textContent = `本次 ${clock}`;
 }
 
 /** 一次心跳：把服务端的权威值取回来，并重置本地漂移基准 */
@@ -2130,6 +2139,9 @@ function currentReportRange() {
 function syncReportLinks() {
   const range = encodeURIComponent(currentReportRange());
   const href = `${REPORT_BASE}/word?range=${range}`;
+  // 三处入口：顶栏常驻按钮、左栏卡片按钮、报告预览弹窗里的按钮。
+  // 少了任何一处都会出现"三个地方下载到不同区间"的怪现象。
+  if (el.topbarExport) el.topbarExport.href = href;
   if (el.reportDownload) el.reportDownload.href = href;
   if (el.reportModalDownload) el.reportModalDownload.href = href;
 }

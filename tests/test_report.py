@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import re
 import zipfile
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -569,3 +570,46 @@ def test_report_generated_at_is_timezone_aware(client: TestClient) -> None:
     body = client.get("/api/v1/report/summary").json()
     assert body["generated_at"].endswith("Z")
     assert datetime.fromisoformat(body["generated_at"].replace("Z", "+00:00")).tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# 6. 前端静态文件的缓存策略与导出入口
+# ---------------------------------------------------------------------------
+def test_frontend_files_must_be_revalidated(client: TestClient) -> None:
+    """前端页面与资源必须每次回头问服务端。
+
+    这条是踩坑之后加的：StaticFiles 只给 ETag / Last-Modified、**不给
+    Cache-Control**，浏览器于是按启发式规则自己决定新鲜期。后果是新版本
+    加了「导出学习报告」按钮，学生刷新页面还是看到老的，以为功能没做——
+    服务端返回的 HTML 里明明有新按钮，浏览器渲染出来的却是旧页面（实测如此）。
+
+    判据：/ui 下的响应带 no-cache（不是"不缓存"，是"用之前先验证"），
+    而 API 响应不受影响（那些本来就不该被浏览器缓存）。
+    """
+    for path in ("/ui/index.html", "/ui/js/app.js", "/ui/css/style.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "no-cache" in response.headers.get("cache-control", ""), path
+
+    # API 响应不带这个头：接口的缓存策略不该被这条中间件顺手改掉
+    assert "no-cache" not in client.get("/api/v1/health").headers.get("cache-control", "")
+
+
+def test_frontend_page_contains_export_entry(client: TestClient) -> None:
+    """页面上必须真的能看到导出入口。
+
+    需求是「导出的 Word 从浏览器里直接下载」，所以入口得是带 download 的
+    <a>；而且必须**同时**出现在顶栏 —— 左栏是纵向滚动区，卡片会被文件列表
+    顶到看不见，只放那里等于没做。
+    """
+    html = client.get("/ui/index.html").text
+    for element_id in ("topbarExport", "reportDownload"):
+        assert f'id="{element_id}"' in html, element_id
+        match = re.search(rf'<a\b[^>]*id="{element_id}"[^>]*>', html)
+        assert match is not None, element_id
+        tag = match.group(0)
+        assert "download" in tag, element_id
+        assert "/api/v1/report/word" in tag, element_id
+
+    # 「本次已使用」也要在常驻区域（顶栏）能看到，否则计时同样没人看见
+    assert 'id="topbarUsage"' in html
