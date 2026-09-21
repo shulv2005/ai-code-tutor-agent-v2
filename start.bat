@@ -70,9 +70,14 @@ if not defined AI_TUTOR_AUTO_INSTALL_PS1 (
     set "AI_TUTOR_AUTO_INSTALL_PS1=%~dp0tools\auto_install_python.ps1"
 )
 
-REM 启动完成后自动打开的网页地址
-REM 根路径会自动跳转到学生前端页面（frontend/index.html）
-set "OPEN_URL=%APP_URL%"
+REM 启动完成后自动打开的网页地址。
+REM 根路径会自动跳转到学生前端页面（frontend/index.html）。
+REM
+REM 末尾带一个随机参数是**故意的**：浏览器对同一个地址会走缓存，
+REM 老缓存会让"新加的功能看不见"（实测踩过：新版本加了「导出学习报告」，
+REM 服务端返回的 HTML 里明明有，学生点开还是旧页面）。带上 %RANDOM% 之后
+REM 每次点开都是一个全新地址，必然重新加载。
+set "OPEN_URL=%APP_URL%/?t=%RANDOM%%RANDOM%"
 
 REM 安装依赖时使用的镜像源（国内下载更快）
 REM 如果这个镜像在你那里访问不了，脚本会自动回退到官方源，无需手动改

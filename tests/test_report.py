@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import time
 import zipfile
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -575,24 +576,51 @@ def test_report_generated_at_is_timezone_aware(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 # 6. 前端静态文件的缓存策略与导出入口
 # ---------------------------------------------------------------------------
-def test_frontend_files_must_be_revalidated(client: TestClient) -> None:
-    """前端页面与资源必须每次回头问服务端。
+def test_frontend_files_are_never_cached(client: TestClient) -> None:
+    """前端页面与资源必须 no-store，绝不能走浏览器缓存。
 
-    这条是踩坑之后加的：StaticFiles 只给 ETag / Last-Modified、**不给
-    Cache-Control**，浏览器于是按启发式规则自己决定新鲜期。后果是新版本
-    加了「导出学习报告」按钮，学生刷新页面还是看到老的，以为功能没做——
-    服务端返回的 HTML 里明明有新按钮，浏览器渲染出来的却是旧页面（实测如此）。
+    这条是踩坑之后加的，而且是**踩了两次**：StaticFiles 只给 ETag /
+    Last-Modified、不给任何 Cache-Control，浏览器于是按启发式规则自己决定
+    新鲜期，在有效期内连请求都不发。后果是新版本加了「导出学习报告」按钮，
+    服务端返回的 HTML 里明明有，学生刷新后浏览器渲染的还是旧页面 ——
+    看起来就是"功能没做"。
 
-    判据：/ui 下的响应带 no-cache（不是"不缓存"，是"用之前先验证"），
-    而 API 响应不受影响（那些本来就不该被浏览器缓存）。
+    第一版改成 no-cache（"用之前先验证"），对**新存下的**缓存有效，
+    但挡不住加这个头之前就已经存在的条目，用户会被历史缓存一直卡住。
+    所以最终用 no-store：前端资源永远不缓存。
+    代价只是本机 localhost 上多传几百 KB，换来"改了页面就一定看得到"。
+
+    API 响应不受影响：业务接口不该被浏览器缓存，但也不该被这条中间件
+    顺手改掉语义。
     """
     for path in ("/ui/index.html", "/ui/js/app.js", "/ui/css/style.css"):
         response = client.get(path)
         assert response.status_code == 200, path
-        assert "no-cache" in response.headers.get("cache-control", ""), path
+        assert "no-store" in response.headers.get("cache-control", ""), path
 
-    # API 响应不带这个头：接口的缓存策略不该被这条中间件顺手改掉
-    assert "no-cache" not in client.get("/api/v1/health").headers.get("cache-control", "")
+    # 根路径的 307 跳转也必须 no-store，否则它本身会被缓存住，
+    # 后面的时间戳参数就永远追不上
+    redirect = client.get("/", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert "no-store" in redirect.headers.get("cache-control", "")
+    assert redirect.headers["location"].startswith("/ui/index.html?t=")
+
+    # API 响应不带这个头
+    assert "no-store" not in client.get("/api/v1/health").headers.get("cache-control", "")
+
+
+def test_root_redirect_carries_a_cache_buster(client: TestClient) -> None:
+    """每次打开根路径都应拿到一个**新的**地址。
+
+    start.bat 打开的就是根地址。带上时间戳之后，无论浏览器里存着多老的
+    缓存，这一次打开必然是新页面 —— "双击 start.bat 却看到旧界面"这类问题
+    从入口就断掉了。
+    """
+    first = client.get("/", follow_redirects=False).headers["location"]
+    time.sleep(0.01)
+    second = client.get("/", follow_redirects=False).headers["location"]
+    assert first.startswith("/ui/index.html?t=")
+    assert first != second, "两次打开拿到同一个地址，说明没有起到绕开缓存的作用"
 
 
 def test_frontend_page_contains_export_entry(client: TestClient) -> None:
@@ -613,3 +641,28 @@ def test_frontend_page_contains_export_entry(client: TestClient) -> None:
 
     # 「本次已使用」也要在常驻区域（顶栏）能看到，否则计时同样没人看见
     assert 'id="topbarUsage"' in html
+
+
+def test_action_buttons_have_no_icons(client: TestClient) -> None:
+    """四个功能按钮前不带图标，且配色统一。
+
+    真实反馈："AI 检测 / 生成注释 / 自动改错 / 诊断+举一反三，它们的功能前
+    不带图标，界面需要简洁"。所以：
+      · 按钮里不能再出现 emoji 或 <span class="btn__icon">；
+      · 四个按钮不能各配一种高饱和色（原先蓝/紫/橙/绿四块），
+        只保留主操作强调色，其余统一描边。
+    """
+    html = client.get("/ui/index.html").text
+
+    for button_id in ("btnCheck", "btnComment", "btnFix", "btnDiagnose"):
+        match = re.search(rf'<button\b[^>]*id="{button_id}"[^>]*>(.*?)</button>', html, re.S)
+        assert match is not None, button_id
+        inner = match.group(1)
+        assert "btn__icon" not in inner, f"{button_id} 里还有图标 span"
+        # 按钮文字里不能再有 emoji（U+1F300 以上的字符）
+        assert not any(ord(ch) > 0x1F000 for ch in inner), f"{button_id} 里还有 emoji：{inner!r}"
+
+    assert "btn__icon" not in html, "页面里还留着 btn__icon"
+    # 次要语义色按钮已随配色统一一起删除，不该再出现在页面上
+    for modifier in ("btn--accent", "btn--warn", "btn--ok"):
+        assert modifier not in html, f"{modifier} 又回到页面上了"

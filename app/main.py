@@ -51,6 +51,7 @@ create_app 工厂的组装顺序（改这里时请保持顺序）
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -264,29 +265,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if frontend_dir.is_dir():
         app.mount("/ui", StaticFiles(directory=str(frontend_dir), html=True), name="ui")
 
-        # 4.1) 前端静态文件必须"每次都回头问一下服务端"。
+        # 4.1) 前端静态文件一律 no-store。
         #
-        # StaticFiles 只给 ETag / Last-Modified，**不给 Cache-Control**，
-        # 浏览器于是按启发式规则自行决定新鲜期：页面在缓存有效期内根本不会
-        # 发请求，服务端换了内容它也照旧显示老的。真实后果就是——
-        # 新版本加了「导出学习报告」按钮，学生刷新了页面还是看不到，
-        # 以为是功能没做（这个坑实测踩过：服务端返回的 HTML 里明明有新按钮，
-        # 浏览器渲染出来的还是旧页面）。
+        # 为什么不是 no-cache：StaticFiles 原本只给 ETag / Last-Modified、
+        # **不给任何 Cache-Control**，浏览器于是按启发式规则自己决定新鲜期，
+        # 在有效期内连请求都不发。后果是——新版本明明加了「导出学习报告」按钮，
+        # 服务端返回的 HTML 里也有，学生刷新后浏览器渲染的还是旧页面，
+        # 看起来就是"功能没做"。这个坑实测踩过两次。
         #
-        # `no-cache` 不是"不缓存"，而是"用之前先验证"：内容没变时服务端回 304，
-        # 仍然很快；变了就必然拿到新的。对一个双击 start.bat 就要用的本地服务，
-        # 这点往返开销完全可以忽略。
+        # no-cache（"用之前先验证"）对**新存下的**缓存有效，但挡不住
+        # 加这个头之前已经存在的那些条目——用户会被历史缓存一直卡住。
+        # 所以这里用 no-store：前端资源永远不缓存，每次都用服务端的。
+        # 代价只是本机 localhost 上多传几百 KB（毫秒级），换来的是
+        # "改了页面就一定看得到"，对教室场景这笔账很划算。
+        #
+        # API 响应不受影响：业务接口本来就不该被浏览器缓存，但也不该
+        # 被这条中间件顺手改掉语义。
         @app.middleware("http")
-        async def revalidate_frontend(request: Request, call_next: Any) -> Response:
+        async def no_store_frontend(request: Request, call_next: Any) -> Response:
             response = await call_next(request)
-            if request.url.path.startswith("/ui"):
-                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            if request.url.path.startswith("/ui") or request.url.path == "/":
+                response.headers["Cache-Control"] = "no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
             return response
 
         @app.get("/", include_in_schema=False)
         async def index_redirect() -> RedirectResponse:
-            """根路径直接跳到前端页面，省得学生手动输地址。"""
-            return RedirectResponse(url="/ui/index.html")
+            """根路径直接跳到前端页面，省得学生手动输地址。
+
+            刻意带一个时间戳参数：**每一次点开都是一个全新的 URL**。
+            `http://127.0.0.1:8000/` 这个地址本身也可能被浏览器缓存过
+            （早期版本没发 Cache-Control），直接跳到 /ui/index.html 会让
+            学生继续看到旧页面。带上 ?t=… 之后，无论历史缓存是什么样，
+            这一次打开必然是新的 —— start.bat 打开的就是这个根地址，
+            所以"双击 start.bat 却看到旧界面"这类问题从入口就断掉了。
+            """
+            stamp = int(time.time() * 1000)
+            return RedirectResponse(
+                url=f"/ui/index.html?t={stamp}",
+                status_code=307,
+                headers={"Cache-Control": "no-store, must-revalidate"},
+            )
 
         @app.get("/favicon.ico", include_in_schema=False)
         async def favicon() -> Response:

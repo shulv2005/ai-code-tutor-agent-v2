@@ -102,7 +102,7 @@
     <aside class="sidebar">
 
       <!-- ====================================================================
-           ⓞ 模型设置（选模型 + 填自己的 API Key）
+           模型设置（选模型 + 填自己的 API Key）
            --------------------------------------------------------------------
            · 模型清单来自 GET /api/v1/models/list（后端 .env 里配了哪些模型就有哪些）；
            · Key 通过 POST /api/v1/auth/set_key 存进**服务端内存会话**，
@@ -203,7 +203,7 @@
           这个区别在界面上必须写清楚，否则学生分不清"我到底交没交作业"。
         -->
         <div class="dropzone dropzone--library" id="libraryDropzone">
-          <p class="dropzone__text">把作业拖到这里 → 加入项目库</p>
+          <p class="dropzone__text">拖到这里即加入项目库</p>
           <p class="dropzone__hint">会保存到服务器的代码文件夹，并按语言自动归类</p>
         </div>
 
@@ -354,13 +354,13 @@
           -->
           <span class="badge badge--warn" id="codeDirtyBadge" hidden>未保存</span>
           <!-- 在线编辑：点「编辑」切到编辑模式，「保存 / 取消」才会出现 -->
-          <button class="btn btn--mini" id="codeEditBtn" title="在线编辑这段代码">编辑 ✎</button>
+          <button class="btn btn--mini" id="codeEditBtn" title="在线编辑这段代码">编辑</button>
           <button class="btn btn--mini btn--primary" id="codeSaveBtn"
                   title="保存（Ctrl+S）" hidden>保存</button>
           <button class="btn btn--mini" id="codeCancelBtn"
                   title="放弃修改（Esc）" hidden>取消</button>
           <!-- 清空按钮：清空后占位提示会重新出现（见 js 里的 setHasCode） -->
-          <button class="btn btn--mini" id="clearCodeBtn" title="清空代码">清空 ✕</button>
+          <button class="btn btn--mini" id="clearCodeBtn" title="清空代码">清空</button>
         </h2>
 
         <!--
@@ -409,24 +409,23 @@
              title="拖动调整代码区高度（也可聚焦后用 ↑ ↓ 键）"></div>
 
         <!-- ---------- 操作按钮组 ---------- -->
+        <!--
+          四个功能按钮刻意**不带图标**：表情符号在不同系统上渲染差异很大，
+          四个彩色按钮排在一起本来就很花，再各配一个 emoji 只会更乱。
+          统一成"白底描边、悬停变主题色"，只有主推的「诊断 + 举一反三」
+          用实心强调 —— 这样一眼能看出哪个是主操作，界面也安静。
+        -->
         <div class="actions" id="codeActions">
-          <!-- 三个 AI 按钮，点击后调用对应的后端接口 -->
-          <button class="btn btn--primary" id="btnCheck" data-action="check">
-            <span class="btn__icon">🔍</span> AI 检测
-          </button>
-          <button class="btn btn--accent" id="btnComment" data-action="comment">
-            <span class="btn__icon">💬</span> 生成注释
-          </button>
-          <button class="btn btn--warn" id="btnFix" data-action="fix">
-            <span class="btn__icon">🛠</span> 自动改错
-          </button>
+          <button class="btn" id="btnCheck" data-action="check">AI 检测</button>
+          <button class="btn" id="btnComment" data-action="comment">生成注释</button>
+          <button class="btn" id="btnFix" data-action="fix">自动改错</button>
           <!--
             第 4 个按钮：诊断 + 举一反三。
             与上面三个按钮的区别：它会把**你以前的错题**一起发给 AI，
             因此除了诊断结论，还会在下半屏出一道新题、并给出知识点解析。
           -->
-          <button class="btn btn--ok" id="btnDiagnose" data-action="diagnose">
-            <span class="btn__icon">🎯</span> 诊断 + 举一反三
+          <button class="btn btn--primary" id="btnDiagnose" data-action="diagnose">
+            诊断 + 举一反三
           </button>
           <!-- 处理中的加载提示 -->
           <span class="actions__hint" id="actionHint"></span>
@@ -532,7 +531,7 @@
 
             <!-- 没有错误时的友好提示 -->
             <div class="callout callout--ok" id="fixNoError" hidden>
-              ✅ 这段代码没有发现明显错误，继续保持！
+              这段代码没有发现明显错误，继续保持。
             </div>
 
             <div id="fixBody">
@@ -568,7 +567,7 @@
           <!-- 空状态：还没错过题（或刚清空过数据库） -->
           <div class="empty" id="wrongBookEmpty">
             <p>这里会显示你的错题本与举一反三练习</p>
-            <p class="empty__hint">载入一段代码，点上面的「🎯 诊断 + 举一反三」</p>
+            <p class="empty__hint">载入一段代码，点上面的「诊断 + 举一反三」</p>
           </div>
 
           <div class="result" id="wrongBookBody" hidden>
@@ -590,7 +589,7 @@
 
             <!-- 举一反三：新题目 -->
             <div id="exerciseBox" hidden>
-              <h3 class="section-title">🎯 举一反三 · 新题目</h3>
+              <h3 class="section-title">举一反三 · 新题目</h3>
               <div class="exercise">
                 <p class="exercise__title" id="exerciseTitle"></p>
                 <p class="exercise__desc" id="exerciseDesc"></p>
@@ -604,7 +603,7 @@
 
             <!-- 知识点详细解析（Markdown，由 marked + DOMPurify 渲染） -->
             <div id="explanationBox" hidden>
-              <h3 class="section-title">📚 知识点详细解析</h3>
+              <h3 class="section-title">知识点详细解析</h3>
               <div class="markdown" id="knowledgeExplanation"></div>
             </div>
 

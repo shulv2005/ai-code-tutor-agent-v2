@@ -23,7 +23,12 @@ def test_root_endpoint_redirects_to_frontend(sqlite_path: Path) -> None:
         if (PROJECT_ROOT / "frontend").is_dir():
             response = client.get("/", follow_redirects=False)
             assert response.status_code in {302, 307}
-            assert response.headers["location"] == "/ui/index.html"
+            # 跳转目标带一个时间戳参数：**每次打开都是一个新地址**，
+            # 这样浏览器缓存里那份旧页面就永远追不上（见 app/main.py 的
+            # index_redirect 与 revalidate/no-store 那段说明）。
+            location = response.headers["location"]
+            assert location.startswith("/ui/index.html?t=")
+            assert location.split("?")[0] == "/ui/index.html"
 
             # 跟随跳转后应当真的拿到 HTML 页面
             page = client.get("/")

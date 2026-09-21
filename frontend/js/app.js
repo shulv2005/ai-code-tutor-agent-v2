@@ -1563,7 +1563,7 @@ async function runCheck() {
     } else {
       el.issueList.innerHTML =
         '<li class="issue issue--info"><div class="issue__head">' +
-        '<span class="issue__title">没有发现明显问题 🎉</span></div></li>';
+        '<span class="issue__title">没有发现明显问题</span></div></li>';
     }
 
     // 亮点
@@ -1615,7 +1615,7 @@ async function runFix() {
       // 代码没问题时给出正向反馈，而不是硬凑一堆"修改"
       el.fixNoError.hidden = false;
       el.fixBody.hidden = true;
-      toast('代码没有发现错误 👍', 'ok');
+      toast('代码没有发现错误', 'ok');
     } else {
       el.fixNoError.hidden = true;
       el.fixBody.hidden = false;
@@ -1730,7 +1730,7 @@ function renderDiagnose(data) {
   const analysis = data.analysis || {};
   const passed = analysis.status === 'success';
 
-  el.diagnoseStatus.textContent = passed ? '✅ 通过' : '❌ 发现问题';
+  el.diagnoseStatus.textContent = passed ? '通过' : '发现问题';
   el.diagnoseStatus.className = 'verdict__badge' + (passed ? '' : ' is-error');
   el.diagnoseType.textContent = analysis.error_type || '';
   el.diagnoseMessage.textContent = analysis.message || '（AI 没有给出说明）';
@@ -1751,14 +1751,14 @@ function renderDiagnose(data) {
   // 悄悄写库是不行的——学生看到"已记入错题本"才会理解下半屏为什么变了。
   if (data.logged) {
     el.diagnoseLogged.textContent =
-      `📕 这次错误已记入错题本（错题本共 ${data.history_total} 条），下次诊断会一起参考。`;
+      `这次错误已记入错题本（错题本共 ${data.history_total} 条），下次诊断会一起参考。`;
     el.diagnoseLogged.hidden = false;
   } else if (passed) {
-    el.diagnoseLogged.textContent = '🎉 这次没有发现错误，因此没有记入错题本。';
+    el.diagnoseLogged.textContent = '这次没有发现错误，因此没有记入错题本。';
     el.diagnoseLogged.hidden = false;
   } else {
     // 有错但没写进去（数据库异常）——如实说明，不要假装成功了
-    el.diagnoseLogged.textContent = '⚠️ 这次诊断发现了问题，但写入错题本失败（不影响本次结果）。';
+    el.diagnoseLogged.textContent = '这次诊断发现了问题，但写入错题本失败（不影响本次结果）。';
     el.diagnoseLogged.className = 'callout';
     el.diagnoseLogged.hidden = false;
     return;
@@ -1814,7 +1814,7 @@ function renderWrongBook(book, meta) {
 }
 
 /**
- * 点「🎯 诊断 + 举一反三」：一次调用同时填满上下两半屏。
+ * 点「诊断 + 举一反三」：一次调用同时填满上下两半屏。
  *
  * 流程与后端 /diagnose 一一对应：
  *   提交代码 → 上半屏渲染 analysis → 下半屏渲染错题本内容
@@ -1843,7 +1843,7 @@ async function runDiagnose() {
     await loadErrorBook();
 
     const passed = (data.analysis || {}).status === 'success';
-    toast(passed ? '诊断完成：这次没有发现错误 🎉' : '诊断完成：已记入错题本，看看新题目吧', 'ok');
+    toast(passed ? '诊断完成：这次没有发现错误' : '诊断完成：已记入错题本，看看新题目吧', 'ok');
   } catch (err) {
     handleAiError(err);
     el.diagnoseStatus.textContent = '诊断失败';
@@ -1879,7 +1879,7 @@ function renderWrongBookEmpty(message) {
   el.wrongBookEmpty.hidden = false;
   el.wrongBookEmpty.innerHTML =
     `<p>${escapeHtml(message)}</p>` +
-    '<p class="empty__hint">载入一段代码，点上面的「🎯 诊断 + 举一反三」</p>';
+    '<p class="empty__hint">载入一段代码，点上面的「诊断 + 举一反三」</p>';
 }
 
 /** 渲染易错知识点：条形长度 = 该知识点次数 / 最高次数 */

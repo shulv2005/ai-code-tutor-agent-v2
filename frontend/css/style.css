@@ -47,7 +47,7 @@
 
   --radius: 10px;
   --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.03), 0 1px 2px rgba(16, 24, 40, 0.04);
 
   /* 代码等宽字体：优先系统自带，避免下载字体文件 */
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
@@ -905,32 +905,40 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   border: 1px solid var(--line);
   background: #fff;
   color: var(--text);
-  padding: 8px 13px;
+  padding: 8px 14px;
   border-radius: var(--radius-sm);
   font-size: 13px;
+  line-height: 1.4;
   font-family: inherit;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  transition: background 0.12s, border-color 0.12s, transform 0.06s;
+  transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.06s;
 }
 
-.btn:hover:not(:disabled) { background: #f7fafb; border-color: #cfd9e3; }
+/* 悬停统一变"主题色描边"，不做成实心：一屏里同时亮起好几个实心按钮很吵 */
+.btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: #24596a;
+}
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn--primary:hover:not(:disabled) { background: #286a79; border-color: #286a79; }
+.btn--primary:hover:not(:disabled) {
+  background: #286a79;
+  border-color: #286a79;
+  color: #fff;
+}
 
-.btn--accent { background: var(--info); border-color: var(--info); color: #fff; }
-.btn--accent:hover:not(:disabled) { background: #255ea0; border-color: #255ea0; }
-
-.btn--warn { background: var(--warn); border-color: var(--warn); color: #fff; }
-/* 「诊断 + 举一反三」按钮：用成功色，与其它三个 AI 按钮区分开——
-   它是唯一一个会读写错题本、结果跨次累积的按钮 */
-.btn--ok { background: var(--ok); border-color: var(--ok); color: #fff; }
-.btn--warn:hover:not(:disabled) { background: #9c6619; border-color: #9c6619; }
+/* 次要语义色只保留"确实要用"的几种。
+   原先四个功能按钮各配一种颜色（蓝/紫/橙/绿），一屏里四块高饱和色块很吵，
+   且 emoji 图标在不同系统上渲染差异很大。现在统一成"白底描边 + 悬停变主题色"，
+   只有主操作（诊断 + 举一反三）用 btn--primary 实心强调。
+   顺带删掉了因此没人用的 .btn--accent / .btn--ok / .btn--warn（死代码审计会报）。 */
 
 /* 危险操作（删除）：平时是描边样式，不抢眼；悬停才变红，提醒"这一下不可逆" */
 .btn--danger { background: #fff; border-color: #e6c3c3; color: var(--error); }
@@ -938,9 +946,7 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .btn--ghost { background: #fff; }
 .btn--block { width: 100%; justify-content: center; margin-top: 6px; }
-.btn--mini { padding: 2px 7px; font-size: 12px; }
-
-.btn__icon { font-size: 14px; }
+.btn--mini { padding: 3px 8px; font-size: 12px; }
 
 .actions {
   display: flex;

@@ -127,11 +127,18 @@ start_source = (BASE / "start.bat").read_bytes().decode("gbk", errors="replace")
 browser_configured = (
     "Start-Process '%OPEN_URL%'" in start_source
     and "/api/v1/health" in start_source
-    and "set \"OPEN_URL=%APP_URL%\"" in start_source
+    and 'set "OPEN_URL=%APP_URL%' in start_source
+    # 打开的地址必须带随机参数，否则浏览器会拿缓存里的旧页面：
+    # 学生看到的是老界面，会以为新功能没做（实测踩过）。
+    and "%RANDOM%" in start_source
 )
 print(
     f"    已配置自动打开浏览器: {'是 ✓' if browser_configured else '否 ✗'}"
     "（等健康检查通过后再打开，避免白页）"
+)
+print(
+    f"    打开的地址带随机参数（绕开浏览器缓存）: "
+    f"{'是 ✓' if '%RANDOM%' in start_source else '否 ✗'}"
 )
 
 
@@ -186,6 +193,9 @@ checks = [
     released,
     name_ok,
     timeout_ok,
+    # 另加一条独立断言：打开的地址必须带随机参数，否则学生看到的是
+    # 浏览器缓存里的旧页面（"新功能没做"的错觉就是这么来的）
+    "%RANDOM%" in start_source,
 ]
 print("\n" + "=" * 74)
 print(f"验收结果: {sum(checks)}/{len(checks)} 项通过")
@@ -201,6 +211,7 @@ for label, ok in zip(
         "stop.bat 释放端口",
         "进程识别正确",
         "兼容输入重定向",
+        "打开的地址带随机参数（绕开浏览器缓存）",
     ],
     checks,
     strict=True,
