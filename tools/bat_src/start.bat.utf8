@@ -19,12 +19,16 @@ REM ===========================================================================
 REM ===========================================================================
 REM  AI 代码导师系统 —— 一键启动脚本（Windows）
 REM
-REM  作用：双击本文件，自动完成下面 5 件事：
+REM  作用：双击本文件，自动完成下面 6 件事：
 REM        1. 检查电脑是否装了 Python，版本够不够
+REM           —— 一台都没装的话，自动联网下载并静默安装 Python 3.11.9
 REM        2. 创建项目专用的虚拟环境（不会影响电脑里其它 Python 项目）
 REM        3. 安装项目需要的第三方库
 REM        4. 检查端口有没有被占用
 REM        5. 启动后端服务，并自动打开浏览器
+REM
+REM  所以「新电脑上什么都没装」也能直接双击运行，唯一的前提是能上网
+REM  （本项目本来就要联网调用大模型接口，这个前提绕不开）。
 REM
 REM  文件编码：GBK/ANSI，与上面切换的 936（简体中文）代码页保持一致。
 REM            用记事本编辑时请选择「ANSI」编码保存；
@@ -56,6 +60,16 @@ set "APP_HOST=127.0.0.1"                REM 监听地址（只允许本机访问
 set "APP_PORT=8000"                     REM 监听端口
 set "APP_URL=http://%APP_HOST%:%APP_PORT%"
 
+REM 本机一个 Python 都找不到时，由这个脚本负责下载并静默安装 Python 3.11.9。
+REM 用 %~dp0 拼成绝对路径，避免依赖当前目录。
+REM 允许从外部覆盖（设了 AI_TUTOR_AUTO_INSTALL_PS1 就用外部那个）：
+REM   * 自动化测试用一个假的安装脚本来验证"没 Python 时的分支"，
+REM     否则每跑一次测试就会真的往机器上装一个 Python；
+REM   * 学校也可以指向内网镜像上的自定义安装脚本。
+if not defined AI_TUTOR_AUTO_INSTALL_PS1 (
+    set "AI_TUTOR_AUTO_INSTALL_PS1=%~dp0tools\auto_install_python.ps1"
+)
+
 REM 启动完成后自动打开的网页地址
 REM 根路径会自动跳转到学生前端页面（frontend/index.html）
 set "OPEN_URL=%APP_URL%"
@@ -66,6 +80,15 @@ set "PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/"
 set "PIP_FALLBACK=https://pypi.org/simple"
 REM 单次下载超时与重试次数：避免网络不通时卡住很久
 set "PIP_OPTS=--timeout 60 --retries 2"
+
+REM PowerShell 的绝对路径。
+REM 故意不用直接敲 "powershell"：学生电脑上的 PATH 经常被各种软件改坏
+REM （装机时被覆盖、被卸载程序的残留顶掉），PATH 里找不到 powershell 时，
+REM 自动安装和"服务就绪后自动开浏览器"这两件事都会静默失败。
+REM Windows 自带的 PowerShell 一定装在这个固定位置，所以优先用绝对路径，
+REM 万一被裁剪过的系统上没有，再退回 PATH。
+set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL%" set "POWERSHELL=powershell"
 
 echo.
 echo ===========================================================================
@@ -105,16 +128,37 @@ if not defined PY_CMD (
     if not errorlevel 1 set "PY_CMD=py -3"
 )
 
-REM 四种方式都找不到，说明电脑没装 Python，给出安装指引
+REM ④ 上面都没找到时，到「默认安装目录」里翻一遍。
+REM    「装了 Python 但安装时忘了勾 Add Python to PATH」是最常见的一种情况：
+REM    此时命令行里敲 python 没有任何反应，但 Python 其实好好地装在电脑里。
+REM    这一步能直接救回这类电脑，省掉一次没必要的重新安装。
+if not defined PY_CMD (
+    call :find_python_in_dirs
+    if defined PY_CMD (
+        echo       在安装目录里找到了 Python（它没加入 PATH，不影响使用）。
+    )
+)
+
+REM ⑤ 还是找不到，说明这台电脑确实没装 Python —— 自动装一个。
+REM    装完不依赖新 PATH（当前这个 cmd 窗口拿不到刚写进注册表的 PATH），
+REM    而是像第 ④ 步那样重新到默认安装目录里找。
+if not defined PY_CMD (
+    call :auto_install_python
+    if not defined PY_CMD call :find_python_in_dirs
+)
+
+REM ⑥ 自动安装也没成（多半是网络问题）—— 给出手动安装指引
 if not defined PY_CMD (
     echo.
-    echo   [错误] 没有检测到 Python，无法继续。
+    echo   [错误] 没有检测到 Python，自动安装也没有成功。
     echo.
-    echo   请先安装 Python 3.11 或更高版本，步骤如下：
+    echo   请手动安装 Python 3.11，步骤如下：
     echo     1. 打开网址 https://www.python.org/downloads/
-    echo     2. 下载 Python 3.11 以上的安装包并运行
+    echo     2. 下载 Python 3.11 的 Windows 安装包并运行
     echo     3. 安装时务必勾选最下方的 "Add Python to PATH"
     echo     4. 装好后重新双击本脚本
+    echo.
+    echo   如果是因为上不了外网：连上手机热点再试一次即可。
     echo.
     pause
     exit /b 1
@@ -224,8 +268,10 @@ if errorlevel 1 (
         echo     3. 权限不足    -- 不要把项目放在 C:\Program Files 这类受保护目录
         echo     4. 版本不匹配  -- 当前用的是 !PY_VER_TEXT!
         echo                       若为 3.13 以上的新版本，部分第三方库可能还没有
-        echo                       预编译包。解决办法：安装 Python 3.11 后，
-        echo                       删除本目录下的 .venv 文件夹再重新运行本脚本。
+        echo                       预编译包。解决办法：跑一次下面的命令装一个
+        echo                       Python 3.11.9（只装给当前用户，不用管理员权限），
+        echo                       然后删掉本目录下的 .venv 文件夹，重新双击本脚本。
+        echo                         "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%AI_TUTOR_AUTO_INSTALL_PS1%"
         echo.
         pause
         exit /b 1
@@ -281,7 +327,7 @@ echo.
 REM 后台开一个「等待服务就绪」的小助手：
 REM 它每秒访问一次健康检查接口，等确认服务起来了才打开浏览器。
 REM 这样学生不会看到一个「无法访问」的空白页，也不用自己数秒数。
-start "" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='%APP_URL%/api/v1/health'; for($i=0;$i -lt 60;$i++){ try{ Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 2 | Out-Null; break }catch{ Start-Sleep -Seconds 1 } }; Start-Process '%OPEN_URL%'"
+start "" /min "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "$u='%APP_URL%/api/v1/health'; for($i=0;$i -lt 60;$i++){ try{ Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 2 | Out-Null; break }catch{ Start-Sleep -Seconds 1 } }; Start-Process '%OPEN_URL%'"
 
 REM 前台启动 FastAPI 服务
 REM 不加 --reload：这是给学生用的稳定运行模式，改代码后重启脚本才生效
@@ -301,4 +347,62 @@ if errorlevel 1 (
 )
 
 pause
-endlocal
+
+REM 主流程到此结束。下面都是子过程，必须用 call 调用 ——
+REM 加上这行 exit /b，避免主流程执行完以后顺着往下掉进子过程里。
+REM
+REM 注意：这里**不能**写 endlocal。子过程里要用 !LOCALAPPDATA! 这类延迟展开变量，
+REM 提前 endlocal 会让 !变量! 全部失效。setlocal 的作用域在脚本退出时自动结束。
+exit /b 0
+
+
+REM ===========================================================================
+REM  子过程：在「默认安装目录」里找 python.exe
+REM
+REM  为什么需要它：Python 安装程序默认会勾选 Add Python to PATH，
+REM  但学生手动装的时候经常把这个勾去掉，导致命令行里敲 python 没反应，
+REM  而 Python 其实就装在 %LOCALAPPDATA%\Programs\Python\Python311 下。
+REM
+REM  版本顺序 311 -> 312 -> 313 是刻意的：本项目在 3.11 / 3.12 上验证过，
+REM  3.13 以上部分第三方库还没有预编译包，只在没别的可选时才用。
+REM  找 python.exe 所在的目录名，不靠 PATH，所以和系统 PATH 是否干净无关。
+REM ===========================================================================
+:find_python_in_dirs
+set "PF86=%ProgramFiles(x86)%"
+for %%v in (311 312 313) do (
+    if not defined PY_CMD (
+        for %%r in ("!LOCALAPPDATA!\Programs\Python" "!ProgramFiles!" "!PF86!" "C:\") do (
+            if not defined PY_CMD if exist "%%~r\Python%%v\python.exe" (
+                set "PY_CMD="%%~r\Python%%v\python.exe""
+            )
+        )
+    )
+)
+exit /b 0
+
+
+REM ===========================================================================
+REM  子过程：自动下载并静默安装 Python
+REM
+REM  真正的下载与安装都在 PowerShell 脚本里（批处理做不了 HTTPS + 哈希校验）。
+REM  这里只负责调用它，并把「成功 / 失败」翻译成中文提示。
+REM
+REM  这个子过程不会返回 python.exe 的路径：安装位置是固定的，
+REM  装完由调用方再跑一次 :find_python_in_dirs 把它找回来。
+REM ===========================================================================
+:auto_install_python
+if not exist "%AI_TUTOR_AUTO_INSTALL_PS1%" (
+    echo.
+    echo       [提醒] 找不到自动安装脚本：
+    echo              %AI_TUTOR_AUTO_INSTALL_PS1%
+    echo              请确认 tools 文件夹没有被删掉或改名。
+    exit /b 0
+)
+
+"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%AI_TUTOR_AUTO_INSTALL_PS1%"
+if errorlevel 1 (
+    echo.
+    echo       [提醒] 自动安装没有成功（错误码 !ERRORLEVEL!）。
+    echo              按上面的提示处理后，重新双击本脚本即可。
+)
+exit /b 0
