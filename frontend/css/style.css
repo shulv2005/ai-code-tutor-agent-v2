@@ -1103,19 +1103,26 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .report__range .input { flex: 1 1 auto; }
 
+/* 三个数字：累计时长占满一行，另两个平分第二行。
+   原先三个挤在一行（每格约 85px），"1 小时 27 分" 会被折成两行、
+   "分"字孤零零挂在下面 —— 实测截图里就是这样。 */
 .report__stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin: 0 0 10px;
 }
 
 .report__stat {
-  padding: 8px 6px;
+  padding: 8px 8px 9px;
   border-radius: var(--radius-sm);
   background: var(--bg);
   text-align: center;
+  min-width: 0;
 }
+
+/* 第一个（累计有效使用时长）跨两列：字数最多，也最该被一眼看到 */
+.report__stat:first-child { grid-column: 1 / -1; }
 
 .report__stat dt {
   font-size: 11.5px;
@@ -1128,7 +1135,13 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   font-size: 13.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  /* 数字与单位之间不折行：容器再窄也只会整体省略，不会把"分"甩到下一行 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+.report__stat:first-child dd { font-size: 16px; }
 
 .report__subtitle {
   margin: 0 0 6px;
@@ -1251,6 +1264,10 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   }
   #resizerRight { display: none; }
   .pane:last-of-type { grid-column: 1 / -1; }
+  /* 「支持 C / Go / Java / JavaScript / Python」是顶栏里最长、也最不关键的一项。
+     窄一点就会把顶栏挤成两行，而"导出学习报告"和"本次时长"必须留在第一行 ——
+     所以这一档起把它收起来（接口 /status 里仍然有完整清单）。 */
+  #langBadge { display: none; }
 }
 
 @media (max-width: 899px) {
@@ -1274,6 +1291,9 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
      上半屏固定高度、内容自己滚（见上面 .is-split-fixed 的规则）。 */
   .pane--split { overflow: visible; }
   .card__scroll { overflow: visible; }
+  /* 单栏这一档最窄，"支持 C / Go / Java / JavaScript / Python" 一定挤不下，
+     收起来保住顶栏一行（见中屏那一档的说明）。 */
+  #langBadge { display: none; }
 }
 
 /* ---------- 9.1 代码区高度（需求三第 3 条） ---------- */

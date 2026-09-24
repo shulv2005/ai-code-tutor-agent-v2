@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/tests-823%20passed-brightgreen)](#8-开发与测试)
+[![Tests](https://img.shields.io/badge/tests-827%20passed-brightgreen)](#8-开发与测试)
 [![Runs offline](https://img.shields.io/badge/%E6%97%A0%E7%BD%91%E7%BB%9C-%E4%B9%9F%E8%83%BD%E8%B7%91-success)](#24-缺什么都能跑降级矩阵)
 
 **仓库地址**：<https://github.com/shulv2005/ai-code-tutor-agent> · 欢迎提 Issue 与 PR
@@ -23,7 +23,7 @@ cd ai-code-tutor-agent
 
 | 指标 | 现状 |
 | --- | --- |
-| **测试** | 823 个用例全部离线可跑（不依赖网络 / API Key），`ruff` 0 问题 |
+| **测试** | 827 个用例全部离线可跑（不依赖网络 / API Key），`ruff` 0 问题 |
 | **验收与审计脚本** | **17 个**（HTTP 验收 + 前端检查与行为测试 + 死代码审计 + `.bat` 生成），逐项实测结果见 [8.2](#82-验收脚本会真的起服务发-http-请求全部实际跑过) |
 | **真实模型验收** | 3 个示例作业 × 3 个功能 + 错题本全链路，预设 bug 100% 命中（见第 8.3 节） |
 
@@ -43,7 +43,7 @@ cd ai-code-tutor-agent
 | [5. AI 功能的原理](#5-ai-功能的原理) | 两阶段设计、错题本与举一反三的提示词、防幻觉的四个手段 |
 | [6. 接口一览](#6-接口一览) | 33 条路径 / 34 个接口，按模块分组 |
 | [7. 项目结构](#7-项目结构) | 带注释的目录树 |
-| [8. 开发与测试](#8-开发与测试) | 823 个测试、验收脚本、真实模型验收记录 |
+| [8. 开发与测试](#8-开发与测试) | 827 个测试、验收脚本、真实模型验收记录 |
 | [9. 常见问题](#9-常见问题) | 启动、端口、回收站、409、清理数据 |
 | [10. 能力边界](#10-能力边界如实说明) | 如实说明的几条限制 |
 
@@ -837,7 +837,7 @@ Markdown 写进 DOM。
 │   └── .trash/                  删除回收站：删掉的文件带时间戳放在这里，可手动找回
 ├── data/                         运行期数据：app.db（含错题本）/ 项目库
 ├── 2026AIC-算法创新赛-作品方案-TU0.docx   参赛技术报告（Word，12 页）
-├── tests/                        823 个用例，全部离线可跑
+├── tests/                        827 个用例，全部离线可跑
 └── tools/                        构建与验收脚本（见第 8 节）
     ├── auto_install_python.ps1   ★ 没有 Python 时自动下载并静默安装 3.11.9
     ├── lib/installer_check.ps1   ★ 安装包校验（架构 / SHA256+MD5 / 数字签名），纯函数、可离线测
@@ -855,7 +855,7 @@ Markdown 写进 DOM。
 ### 8.1 跑一遍
 
 ```powershell
-python -m pytest                       # 823 个用例，全部离线可跑，约 100 秒
+python -m pytest                       # 827 个用例，全部离线可跑，约 100 秒
 python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 ```
 
@@ -877,7 +877,7 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 | `tools\verify_fix.py` `[--ai]` | 代码改错：本地路径 9 项；加测真实模型 12 项 | ✓ |
 | `tools\verify_comment.py` `[--ai]` | 注释生成：本地路径 6 项；加测真实模型 19 项 | ✓ |
 | `tools\verify_diagnose.py` `[--ai]` | 错题本 + 举一反三：接口与参数校验 14 项；加测真实模型约 30 项（含"历史错题是否真进了提示词"） | 14 项 ✓（未配 Key 的路径） |
-| `tools\verify_bat.py` | `start.bat` → 服务 → `stop.bat` 全流程 | 9 项 ✓ |
+| `tools\verify_bat.py` | `start.bat` → 服务 → `stop.bat` 全流程（含"打开的地址带随机参数，绕开浏览器缓存"） | 10 项 ✓ |
 | `tools\verify_no_python.py` | **新电脑没装 Python** 的那几条分支：自动安装被调用、失败后给出手动指引、脚本缺失时的降级、"装了但没加 PATH"能被目录扫描捞回来；外加安装包校验库的架构判定 / 哈希 / 签名拒绝分支（**不会真的装 Python**） | 19 项 ✓ |
 | `tools\verify_report.py` | **使用时长 + 学习报告**：心跳累加与单段封顶、区间汇总口径、易错知识点排行、导出的 .docx 结构与内容，并**用 Word 亲自打开一次**（结构合法 ≠ Word 认） | 58 项 ✓ |
 | `tools\check_frontend.py` | JS 语法 / DOM id / CSS 类名 / **接口与方法**交叉检查 + 前端行为测试 | 全部通过 ✓ |
