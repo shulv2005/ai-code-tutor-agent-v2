@@ -46,11 +46,17 @@ function makeClassList(classSet) {
 
 let nodeSeq = 0;
 
-/** 创建一个假元素 */
-function makeElement(id = '') {
+/**
+ * 创建一个假元素。
+ *
+ * `tag` 用来把 tagName 设对：雷达图是靠 tagName 区分 polygon / line / circle / text
+ * 来断言的，全给 'DIV' 就什么都验不出来（第一版就踩了这个 —— 桩里 `createElement`
+ * 把标签名当成了 id，12 个 text 一个都没认出来）。
+ */
+function makeElement(id = '', tag = 'div') {
   const element = {
     id,
-    tagName: 'DIV',
+    tagName: String(tag).toUpperCase(),
     textContent: '',
     _innerHTML: '',
     disabled: false,
@@ -119,6 +125,11 @@ function makeElement(id = '') {
   element.closest = () => null;
   element.querySelectorAll = () => [];
   element.querySelector = () => null;
+  // 属性读写：雷达图是用 setAttribute 画 SVG 的（SVG 没有 className 那套），
+  // 桩里没有它就会直接抛 TypeError，测不到任何东西。
+  element._attrs = {};
+  element.setAttribute = (name, value) => { element._attrs[name] = String(value); };
+  element.getAttribute = (name) => (name in element._attrs ? element._attrs[name] : null);
   // 有些流程会以代码方式触发点击（例如「替换」要唤起隐藏的文件选择框）。
   // 真实 DOM 里每个元素都有 click()，桩里也得有，否则那行代码会直接抛 TypeError。
   element.click = () => {
@@ -129,6 +140,12 @@ function makeElement(id = '') {
   nodeSeq += 1;
   return element;
 }
+
+/* 记录 createElementNS 的调用。
+   雷达图必须用 createElementNS 造 SVG 节点 —— 用 createElement 造出来的
+   在真实浏览器里是 HTMLUnknownElement，**不会渲染也不报错**，
+   表现就是"代码跑了，图是空的"。所以这里专门盯着它。 */
+const nsCalls = [];
 
 /** 创建假文本节点 */
 function makeTextNode(text) {
@@ -197,6 +214,8 @@ function register(id, rect) {
   'reportPreview', 'reportDownload',
   'reportModal', 'reportModalBody', 'reportModalClose', 'reportModalDownload',
   'refreshReport',
+  // 能力雷达图（侧栏那张小的）
+  'radarBox', 'radarChart', 'radarCaption',
   'toast',
 ].forEach((id) => register(id));
 
@@ -235,7 +254,13 @@ const documentStub = {
     if (selector === '.pane:last-of-type') return resultPaneElement;
     return null;
   },
-  createElement: () => makeElement(),
+  createElement: (tag) => makeElement('', tag),
+  createElementNS: (ns, tag) => {
+    nsCalls.push({ ns, tag });
+    const node = makeElement('', tag);
+    node._ns = ns;
+    return node;
+  },
   createTextNode: (text) => makeTextNode(text),
   addEventListener: (type, handler) => {
     if (type === 'DOMContentLoaded') documentStub._domReady = handler;
@@ -483,6 +508,9 @@ const epilogue = `
   formatClock, renderReportLive, sendHeartbeat, startUsageHeartbeat,
   currentReportRange, syncReportLinks, loadReport, renderReportWeakList,
   renderReportPreview, openReportPreview, closeReportPreview, bindReportCard,
+  // 能力雷达图（六维，手写 SVG）
+  radar: { RADAR_VIEW },
+  radarPoint, radarPolygon, renderAbilityRadar, renderAbilityRadarInto,
 };
 `;
 vm.runInContext(source + epilogue, context, { filename: 'app.js' });
@@ -1996,16 +2024,109 @@ await api.openReportPreview();
 check('点「查看报告内容」会打开弹窗',
   !el.reportModal.classList.contains('hidden'));
 const previewHtml = el.reportModalBody.innerHTML;
-check('弹窗里有三个章节',
-  previewHtml.includes('一、使用情况') && previewHtml.includes('二、错题整改情况')
-  && previewHtml.includes('三、学习建议'));
+check('弹窗里有四个章节',
+  previewHtml.includes('一、能力雷达')
+  && previewHtml.includes('二、使用情况') && previewHtml.includes('三、错题整改情况')
+  && previewHtml.includes('四、学习建议'));
 check('弹窗里带上了学习建议原文', previewHtml.includes('累计错 3 次'));
 check('弹窗里有错题明细表', previewHtml.includes('report-view__table'));
 check('弹窗里列出了知识点', previewHtml.includes('循环边界'));
 
+// ---- 8. 能力雷达图（六维，手写 SVG）----
+console.log();
+console.log('='.repeat(72));
+console.log('能力雷达图  六维评分 + SVG 绘制');
+console.log('='.repeat(72));
+
+const ABILITY = {
+  dimensions: [
+    { key: 'completeness', label: '完备性', hint: '分支覆盖', score: 80, weight: 3, evidence_count: 1, samples: [] },
+    { key: 'conventions', label: '规范性', hint: '编码规范', score: 60, weight: 6, evidence_count: 2, samples: [] },
+    { key: 'readability', label: '可读性', hint: '命名注释', score: 100, weight: 0, evidence_count: 0, samples: [] },
+    { key: 'efficiency', label: '高效性', hint: '复杂度', score: 40, weight: 12, evidence_count: 3, samples: [] },
+    { key: 'robustness', label: '健壮性', hint: '边界异常', score: 20, weight: 20, evidence_count: 4, samples: [] },
+    { key: 'accuracy', label: '准确性', hint: '逻辑结果', score: 90, weight: 1, evidence_count: 1, samples: [] },
+  ],
+  evidence_total: 11, error_total: 11, check_total: 0, unclassified: 0,
+  weakest: 'robustness', strongest: 'readability', spread: 80,
+  summary: '依据 11 条记录得出，最弱的是健壮性。',
+};
+
+const nsBefore = nsCalls.length;
+api.renderAbilityRadar(ABILITY);
+const svg = el.radarChart;
+
+check('雷达图用的是 createElementNS 而不是 createElement',
+  nsCalls.length > nsBefore && nsCalls.slice(nsBefore).every((c) => c.ns === 'http://www.w3.org/2000/svg'),
+  `${nsCalls.length - nsBefore} 个节点`);
+
+const childTags = svg.children.map((c) => c.tagName);
+check('画了 4 圈同心网格',
+  childTags.filter((t) => t === 'POLYGON').length === 5,   // 4 圈网格 + 1 个数据多边形
+  childTags.filter((t) => t === 'POLYGON').length + ' 个 polygon');
+check('画了 6 根轴线', childTags.filter((t) => t === 'LINE').length === 6);
+check('画了 6 个数据顶点', childTags.filter((t) => t === 'CIRCLE').length === 6);
+check('每个轴都标了名字与分数（6×2 个 text）',
+  childTags.filter((t) => t === 'TEXT').length === 12,
+  childTags.filter((t) => t === 'TEXT').length + ' 个 text');
+
+const areaPoly = svg.children.find((c) => c._attrs && c._attrs.class === 'radar__area');
+check('数据多边形存在且是 6 个顶点',
+  areaPoly && areaPoly._attrs.points.split(' ').length === 6);
+check('数据多边形是半透明填充 + 实线描边（CSS 类挂对了）',
+  areaPoly._attrs.class === 'radar__area');
+
+// 满分的顶点应当落在最外圈上：正上方那根轴的 y 应该等于 cy - radius
+const view = api.radar.RADAR_VIEW;
+const topFull = api.radarPoint(0, 6, 1, view);
+check('满分顶点落在最外圈（正上方那根轴）',
+  Math.abs(topFull.y - (view.cy - view.radius)) < 0.01 && Math.abs(topFull.x - view.cx) < 0.01,
+  `(${topFull.x.toFixed(1)}, ${topFull.y.toFixed(1)})`);
+const zero = api.radarPoint(0, 6, 0, view);
+check('0 分顶点落在圆心', Math.abs(zero.x - view.cx) < 0.01 && Math.abs(zero.y - view.cy) < 0.01);
+const half = api.radarPoint(0, 6, 0.5, view);
+check('50 分顶点落在半径一半处',
+  Math.abs(half.y - (view.cy - view.radius / 2)) < 0.01, half.y.toFixed(1));
+check('第 4 根轴（索引 3）在正下方：x 与圆心齐平、y 为圆心加半径',
+  Math.abs(api.radarPoint(3, 6, 1, view).x - view.cx) < 0.01
+  && Math.abs(api.radarPoint(3, 6, 1, view).y - (view.cy + view.radius)) < 0.01,
+  `(${api.radarPoint(3, 6, 1, view).x.toFixed(1)}, ${api.radarPoint(3, 6, 1, view).y.toFixed(1)})`);
+
+const weakDot = svg.children.find(
+  (c) => c._attrs && String(c._attrs.class).includes('radar__dot--weak'),
+);
+check('最弱的那一项被单独标出来（唯一的弱点圆点）',
+  svg.children.filter((c) => c._attrs && String(c._attrs.class).includes('radar__dot--weak')).length === 1);
+check('弱点圆点确实落在最弱维度（健壮性）的轴上',
+  weakDot && Number(weakDot._attrs.r) > 3, weakDot ? weakDot._attrs.r : '无');
+check('顶点带 title（悬停能看到分数与依据条数）',
+  svg.children.filter((t) => t.tagName === 'CIRCLE' && t.children.length === 1).length === 6);
+check('配了人话结论', el.radarCaption.textContent.includes('健壮性'),
+  el.radarCaption.textContent);
+
+// 一条记录都没有：不画多边形，只留一句话说明
+nsCalls.length = 0;
+api.renderAbilityRadar({
+  dimensions: [], evidence_total: 0, weakest: '', strongest: '', spread: 0, summary: '',
+});
+check('没有数据时不画图，只提示"暂无能力数据"',
+  el.radarChart.children.length === 0 && el.radarCaption.textContent === '暂无能力数据',
+  el.radarCaption.textContent);
+check('没有数据时也不会去创建 SVG 节点（不做无用的工作）', nsCalls.length === 0);
+
+// 接口没返回 ability 字段（老后端 / 接口降级）时不能抛异常
+let radarSurvived = true;
+try {
+  const blank = makeElement('', 'svg');
+  api.renderAbilityRadarInto(blank, undefined, view);
+  check('ability 缺失时画空图，且不进任何节点', blank.children.length === 0);
+} catch (err) {
+  radarSurvived = false;
+}
+check('ability 缺失时不抛异常（接口降级也要画得出空图）', radarSurvived);
+
 api.closeReportPreview();
 check('关闭后弹窗重新隐藏', el.reportModal.classList.contains('hidden'));
-
 // Esc 也能关
 el.reportModal.classList.remove('hidden');
 fireDocument('keydown', { key: 'Escape' });

@@ -31,6 +31,14 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.models.base import utc_now
 from app.models.usage import UsageSession
+from app.services.ability_service import (
+    DIMENSIONS,
+    MIN_SCORE,
+    AbilityService,
+    classify,
+    score_from_weight,
+)
+from app.services.png_chart import Canvas, render_radar_png
 from app.services.report_docx import render_learning_report
 from app.services.report_service import ReportService
 from app.services.tutor_service import TutorService
@@ -389,7 +397,46 @@ def _sample_report() -> dict:
                 }
             ],
         },
+        "ability": _sample_ability(),
         "suggestions": ["「循环边界」累计错 2 次，建议重做。"],
+    }
+
+
+def _sample_ability() -> dict:
+    """六维能力画像的样例（结构与 AbilityService.build() 一致）。
+
+    分数刻意排成"健壮性最弱、可读性最强"，用来验证 Word 里最弱那一项
+    会被标出来、并且排到表的第一行。
+    """
+    rows = [
+        ("completeness", "完备性", "分支覆盖与代码完整度", 70, 6.0, 2),
+        ("conventions", "规范性", "语法与编码规范", 83, 3.0, 1),
+        ("readability", "可读性", "命名、注释与结构是否清楚", 100, 0.0, 0),
+        ("efficiency", "高效性", "算法与复杂度意识", 71, 6.0, 2),
+        ("robustness", "健壮性", "边界、空值与异常处理", 53, 9.0, 3),
+        ("accuracy", "准确性", "逻辑与结果是否正确", 91, 1.5, 1),
+    ]
+    return {
+        "dimensions": [
+            {
+                "key": key,
+                "label": label,
+                "hint": hint,
+                "score": score,
+                "weight": weight,
+                "evidence_count": count,
+                "samples": [],
+            }
+            for key, label, hint, score, weight, count in rows
+        ],
+        "error_total": 9,
+        "check_total": 0,
+        "evidence_total": 9,
+        "unclassified": 1,
+        "weakest": "robustness",
+        "strongest": "readability",
+        "spread": 47,
+        "summary": "依据 9 条记录（错题 9 条、检测 0 次）得出。目前最弱的是「健壮性」。",
     }
 
 
@@ -429,14 +476,19 @@ def test_docx_contains_the_actual_data() -> None:
         for para in root.iter(f"{W}p")
     )
     assert "学习报告" in blob
-    assert "一、使用情况" in blob
-    assert "二、错题整改情况" in blob
-    assert "三、学习建议" in blob
+    assert "一、能力雷达（六维）" in blob
+    assert "二、使用情况" in blob
+    assert "三、错题整改情况" in blob
+    assert "四、学习建议" in blob
     assert "1 小时 27 分" in blob
     assert "循环边界" in blob
     assert "range 少遍历一个元素" in blob
-    # 表格：基本信息 / 使用汇总 / 按天 / 每次明细 / 知识点 / 类型 / 语言 / 错题明细
-    assert len(list(root.iter(f"{W}tbl"))) >= 8
+    # 表格：基本信息 / 能力维度 / 使用汇总 / 按天 / 每次明细 / 知识点 / 类型 / 语言 / 错题明细
+    assert len(list(root.iter(f"{W}tbl"))) >= 9
+    # 六个能力维度都要出现在表里，并且要说明"依据多少条证据"
+    for label in ("准确性", "健壮性", "规范性", "可读性", "高效性", "完备性"):
+        assert label in blob, label
+    assert "评估依据" in blob
 
 
 def test_docx_escapes_special_characters() -> None:
@@ -663,6 +715,288 @@ def test_action_buttons_have_no_icons(client: TestClient) -> None:
         assert not any(ord(ch) > 0x1F000 for ch in inner), f"{button_id} 里还有 emoji：{inner!r}"
 
     assert "btn__icon" not in html, "页面里还留着 btn__icon"
-    # 次要语义色按钮已随配色统一一起删除，不该再出现在页面上
+    # 次要语义色按钮已随配色统一一起删除，不该再回到页面上
     for modifier in ("btn--accent", "btn--warn", "btn--ok"):
         assert modifier not in html, f"{modifier} 又回到页面上了"
+
+
+# ---------------------------------------------------------------------------
+# 7. 能力雷达图：六维打分
+# ---------------------------------------------------------------------------
+def test_ability_has_six_dimensions_with_stable_keys() -> None:
+    """维度键是前后端与 Word 共用的契约，不能随手改名。"""
+    assert [item.key for item in DIMENSIONS] == [
+        "completeness", "conventions", "readability",
+        "efficiency", "robustness", "accuracy",
+    ]
+    for item in DIMENSIONS:
+        assert item.label and item.hint and item.keywords
+
+
+def test_ability_score_is_monotonic_and_bounded() -> None:
+    """分数公式：单调递减、有下限、没有证据时满分。
+
+    这三条是雷达图能读的前提 —— 不平滑递减的话，两个维度谁高谁低
+    就没有意义了。
+    """
+    assert score_from_weight(0) == 100
+    assert score_from_weight(10) == 50  # 除数就是 10，权重和=10 时正好一半
+    assert score_from_weight(20) == 33
+    # 单调递减：权重越大分数越低（允许相等，但绝不能反弹）
+    scores = [score_from_weight(w) for w in range(0, 60, 3)]
+    assert all(a >= b for a, b in zip(scores, scores[1:], strict=False)), scores
+    # 下限
+    assert score_from_weight(100000) == MIN_SCORE
+    assert all(15 <= s <= 100 for s in scores)
+
+
+def test_ability_classify_uses_knowledge_point_first() -> None:
+    """知识点优先于正文：正文里的无关词不该把结论带偏。
+
+    实测过一条 `函数返回值` + "函数名叫 add 却做减法" 的错题 ——
+    拼在一起匹配时正文里的"函数名"先命中可读性，而它其实是准确性问题。
+    """
+    assert classify("函数返回值", "逻辑错误", "函数名叫 add 却做减法") == "accuracy"
+    assert classify("变量命名", "规范问题", "a、b、c 含义不清") == "readability"
+    assert classify("循环边界", "逻辑错误", "少遍历一个元素") == "robustness"
+    assert classify("数组下标", "运行时错误", "从 1 开始算") == "robustness"
+    assert classify("复杂度", "逻辑错误", "两层嵌套循环") == "efficiency"
+    assert classify("缩进", "规范问题", "缩进不一致") == "conventions"
+    assert classify("注释", "规范问题", "没说明这段干什么") == "readability"
+
+
+def test_ability_error_type_only_used_as_fallback() -> None:
+    """关键词都没命中时才看错误类型。
+
+    曾经把 error_type 拼进匹配文本，结果每条「规范问题」都因为字面带"规范"
+    二字先命中规范性，可读性永远满分 —— 雷达图白少一个角。
+    """
+    assert classify("", "规范问题", "") == "conventions"
+    assert classify("", "运行时错误", "") == "robustness"
+    assert classify("", "语法错误", "") == "completeness"
+    assert classify("", "逻辑错误", "") == "accuracy"
+    # 兜底路径也兜不住时归到准确性，不抛异常
+    assert classify("完全无关的一段话", "未知类型", "") == "accuracy"
+    assert classify("", "", "") == "accuracy"
+
+
+def test_ability_empty_history_is_all_full_marks(sqlite_path: Path) -> None:
+    """一条记录都没有时六项全满分，并在结论文案里说明原因。"""
+    profile = asyncio.run(_ability_of([]))
+    assert profile["evidence_total"] == 0
+    assert [item["score"] for item in profile["dimensions"]] == [100] * 6
+    assert "还没有" in profile["summary"]
+    assert profile["spread"] == 0
+
+
+def test_ability_reflects_where_the_errors_are(sqlite_path: Path) -> None:
+    """错在哪一项，哪一项就低 —— 这是雷达图存在的全部意义。"""
+    profile = asyncio.run(
+        _ability_of(
+            [
+                ("运行时错误", "数组下标", "下标从 1 开始"),
+                ("运行时错误", "空指针", "没有判空"),
+                ("运行时错误", "数组越界", "多访问了一位"),
+                ("规范问题", "变量命名", "a、b、c 含义不清"),
+            ]
+        )
+    )
+    by_key = {item["key"]: item for item in profile["dimensions"]}
+    assert by_key["robustness"]["score"] < by_key["accuracy"]["score"]
+    assert by_key["readability"]["score"] < by_key["accuracy"]["score"]
+    # 三处都没错的那几项应该还是满分
+    assert by_key["efficiency"]["score"] == 100
+    assert profile["weakest"] == "robustness"
+    # 打平时 strongest 取固定顺序里靠前的那一个（结果可复现），
+    # 所以这里只断言"它是满分那一档里的一个"，而不是某个具体名字
+    assert by_key[profile["strongest"]]["score"] == 100
+    assert profile["spread"] == 100 - by_key["robustness"]["score"]
+    assert by_key["robustness"]["evidence_count"] == 3
+    # 结论文案要点出最弱那一项的中文名
+    assert "健壮性" in profile["summary"]
+
+
+def test_ability_unknown_knowledge_point_counts_as_completeness(sqlite_path: Path) -> None:
+    """"知识点都标注不出来"归到完备性，并如实计入 unclassified。"""
+    profile = asyncio.run(
+        _ability_of([("逻辑错误", "未标注知识点", "片段太短，看不出上下文")])
+    )
+    by_key = {item["key"]: item for item in profile["dimensions"]}
+    assert by_key["completeness"]["score"] < 100
+    assert profile["unclassified"] == 1
+    assert "无法判定到具体维度" in profile["summary"]
+
+
+async def _ability_of(rows: list[tuple[str, str, str]]) -> dict:
+    """在临时库里插若干错题，然后算一份能力画像。"""
+    from app.models.error_log import StudentErrorLog
+
+    async with _db() as session:
+        for error_type, point, feedback in rows:
+            session.add(
+                StudentErrorLog(
+                    student_id="local",
+                    code_snippet="pass",
+                    language="python",
+                    filename="h.py",
+                    error_type=error_type,
+                    knowledge_point=point,
+                    knowledge_points_json="[]",
+                    ai_feedback=feedback,
+                    source="diagnose",
+                )
+            )
+        await session.commit()
+        return await AbilityService.build(session, student_id="local")
+
+
+def test_ability_is_isolated_per_student(sqlite_path: Path) -> None:
+    """别的学生的错题不能算到我头上（多机共用一个库时的前提）。"""
+
+    async def run() -> dict:
+        from app.models.error_log import StudentErrorLog
+
+        async with _db() as session:
+            session.add(
+                StudentErrorLog(
+                    student_id="someone-else",
+                    code_snippet="pass",
+                    language="python",
+                    filename="h.py",
+                    error_type="运行时错误",
+                    knowledge_point="空指针",
+                    knowledge_points_json="[]",
+                    ai_feedback="没判空",
+                    source="diagnose",
+                )
+            )
+            await session.commit()
+            return await AbilityService.build(session, student_id="local")
+
+    profile = asyncio.run(run())
+    assert profile["evidence_total"] == 0
+    assert profile["dimensions"][0]["score"] == 100
+
+
+def test_ability_endpoint_exposes_the_profile(client: TestClient) -> None:
+    body = client.get("/api/v1/report/summary?range=all").json()["ability"]
+    assert [item["key"] for item in body["dimensions"]] == [d.key for d in DIMENSIONS]
+    for item in body["dimensions"]:
+        assert 0 <= item["score"] <= 100
+        assert isinstance(item["samples"], list)
+
+
+# ---------------------------------------------------------------------------
+# 8. Word 报告里的雷达图（手写 PNG，不依赖 Pillow）
+# ---------------------------------------------------------------------------
+def _png_chunks(payload: bytes) -> list[str]:
+    """把 PNG 拆成块名列表，并顺便校验每个块的 CRC。"""
+    import struct
+    import zlib
+
+    assert payload[:8] == b"\x89PNG\r\n\x1a\n", "PNG 魔数不对"
+    index = 8
+    names: list[str] = []
+    while index < len(payload):
+        length = struct.unpack(">I", payload[index : index + 4])[0]
+        tag = payload[index + 4 : index + 8]
+        body = payload[index + 8 : index + 8 + length]
+        crc = struct.unpack(">I", payload[index + 8 + length : index + 12 + length])[0]
+        assert zlib.crc32(tag + body) & 0xFFFFFFFF == crc, f"{tag!r} 的 CRC 不对"
+        names.append(tag.decode())
+        index += 12 + length
+    return names
+
+
+def test_png_is_a_valid_png() -> None:
+    """自己写的 PNG 编码器要产出真正合法的 PNG。
+
+    只测"字节数大于 0"是没用的 —— Word 拿到坏图只会显示一个红叉，
+    不报错。所以这里把容器结构、CRC、以及 IHDR 里的宽高都验一遍。
+    """
+    import struct
+
+    dims = _sample_ability()["dimensions"]
+    payload = render_radar_png(dims, "robustness")
+    assert _png_chunks(payload) == ["IHDR", "IDAT", "IEND"]
+    # IHDR 紧跟块头，前 8 个字节是宽高
+    assert struct.unpack(">II", payload[16:24]) == (620, 520)
+    # 位深 8 / 颜色类型 2（真彩）
+    assert payload[24] == 8
+    assert payload[25] == 2
+
+
+def test_png_radar_empty_still_renders() -> None:
+    """没有数据也要出一张合法的空图（Word 里宁可放图也不留空）。"""
+    assert _png_chunks(render_radar_png([], "")) == ["IHDR", "IDAT", "IEND"]
+
+
+def test_png_canvas_blend_and_bounds() -> None:
+    """画布越界不抛异常，alpha 混合方向正确。"""
+    canvas = Canvas(4, 4)
+    canvas.blend(-1, 0, (0, 0, 0))  # 越界：静默丢弃
+    canvas.blend(10, 10, (0, 0, 0))
+    canvas.blend(0, 0, (0, 0, 0), 1.0)
+    assert canvas.rows[0][0:3] == bytearray((0, 0, 0))
+    canvas.blend(1, 1, (0, 0, 0), 0.5)
+    blended = canvas.rows[1][3]
+    assert 120 <= blended <= 130, blended  # 白底混一半黑 ≈ 128
+    canvas.blend(2, 2, (0, 0, 0), 0.0)  # alpha=0 不该改动任何像素
+    assert canvas.rows[2][6:9] == bytearray((255, 255, 255))
+
+
+def test_docx_embeds_the_radar_image() -> None:
+    """图片要真的进包，而且四处引用（部件 / Content_Types / rels / 正文）齐全。
+
+    少任何一处 Word 都会说"文档已损坏"或显示红叉 —— 实测漏过
+    `xmlns:wp` 的声明，Word 报的却是"文档可能已经损坏"，完全看不出是命名空间。
+    """
+    payload = render_learning_report(_sample_report())
+    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+        names = zf.namelist()
+        assert "word/media/radar.png" in names
+        assert _png_chunks(zf.read("word/media/radar.png"))[-1] == "IEND"
+
+        content_types = zf.read("[Content_Types].xml").decode()
+        assert 'Extension="png"' in content_types
+
+        rels = zf.read("word/_rels/document.xml.rels").decode()
+        assert "media/radar.png" in rels
+        assert "/image" in rels
+
+        document = zf.read("word/document.xml").decode()
+        assert "<w:drawing>" in document
+        # wp: 前缀必须在根元素上声明，否则 Word 打不开
+        assert "xmlns:wp=" in document
+        assert 'r:embed="rId3"' in document
+        # 图片尺寸按真实比例算：宽高都不能是 0
+        assert 'wp:extent cx="3780000" cy="3170322"' in document
+
+        # 每个 XML 部件都要能被解析（命名空间没声明的错误在这里就会暴露）
+        for name in names:
+            if name.endswith(".xml") or name.endswith(".rels"):
+                ET.fromstring(zf.read(name))
+
+
+def test_docx_ability_table_marks_the_weakest() -> None:
+    """最弱那一项要标出来，并且排在表的第一行（老师一眼看到短板）。"""
+    payload = render_learning_report(_sample_report())
+    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+
+    rows: list[list[str]] = []
+    for table in root.iter(f"{W}tbl"):
+        for row in table.iter(f"{W}tr"):
+            cells = [
+                "".join(node.text or "" for node in cell.iter(f"{W}t"))
+                for cell in row.iter(f"{W}tc")
+            ]
+            rows.append(cells)
+
+    ability_rows = [r for r in rows if r and r[0].startswith("健壮性")]
+    assert ability_rows, "能力表里没找到健壮性那一行"
+    assert "（最弱）" in ability_rows[0][0]
+    assert ability_rows[0][1] == "53 分"
+    assert ability_rows[0][2] == "3 条"
+    # 只标一个最弱
+    assert sum(1 for r in rows if r and "（最弱）" in r[0]) == 1

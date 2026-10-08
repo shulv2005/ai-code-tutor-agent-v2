@@ -303,6 +303,21 @@
           </div>
         </dl>
 
+        <!--
+          能力雷达图（六维）。
+          手写 SVG 而不是引图表库：雷达图就是一个多边形，几十行代码；
+          引 echarts/chart.js 要塞进几百 KB 的 vendor 文件，
+          与"断网也能用、双击就能跑"的定位不划算（同 report_docx.py 的理由）。
+          由 JS 的 renderAbilityRadar() 填内容。
+        -->
+        <div class="radar" id="radarBox">
+          <svg class="radar__svg" id="radarChart" viewBox="0 0 260 240"
+               role="img" aria-labelledby="radarTitle">
+            <title id="radarTitle">六维能力雷达图</title>
+          </svg>
+          <p class="radar__caption" id="radarCaption">正在统计能力…</p>
+        </div>
+
         <!-- 易错知识点 Top 5（条形图） -->
         <div id="reportWeakBox" hidden>
           <p class="report__subtitle">易错知识点</p>

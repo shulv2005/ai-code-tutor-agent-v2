@@ -36,6 +36,8 @@ from datetime import datetime
 from typing import Any
 from xml.sax.saxutils import escape
 
+from app.services.png_chart import render_radar_png
+
 # --- 页面与版式常量（单位：twips，1 英寸 = 1440 twips）-------------------------
 PAGE_WIDTH = 11906  # A4 宽
 PAGE_HEIGHT = 16838  # A4 高
@@ -56,6 +58,10 @@ EN_FONT = "Times New Roman"
 
 NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+# 图片用的命名空间。wp: 必须在 w:document 上声明 —— 只在 <wp:inline> 里
+# 写 xmlns:a / xmlns:pic 是不够的，wp: 前缀没人声明时 Word 直接报
+# "文档可能已经损坏"（踩过一次，报错信息完全不提命名空间）。
+NS_WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 
 
 def _t(text: Any) -> str:
@@ -170,6 +176,66 @@ def _heading(text: str, *, level: int = 1) -> str:
     )
 
 
+# 图片在文档里的显示尺寸（EMU，1 厘米 = 360000 EMU）
+IMG_WIDTH_CM = 10.5
+EMU_PER_CM = 360000
+IMAGE_REL_ID = "rId3"          # 与 DOCUMENT_RELS 里的图片关系对应
+IMAGE_PART = "word/media/radar.png"
+
+
+def _image_paragraph(png: bytes, *, alt: str, caption: str = "") -> str:
+    """把一张 PNG 居中放进文档。
+
+    ## 嵌入图片需要同时改四处（少一处 Word 就打不开或显示红叉）
+
+      1. 包里写入 `word/media/radar.png`；
+      2. `[Content_Types].xml` 加一条 `Default Extension="png"`；
+      3. `word/_rels/document.xml.rels` 加一条 image 关系；
+      4. 正文里用 `w:drawing` 引用那个 r:id，并给出 `wp:extent` 尺寸。
+
+    尺寸必须按图片真实比例算：只给宽不给高，Word 会把图压扁。
+
+    `w:docPr` 的 id 必须非 0 且在本文件内唯一，否则 Word 报"文档包含
+    无法读取的内容"。
+    """
+    from app.services.png_chart import HEIGHT, WIDTH
+
+    cx = int(IMG_WIDTH_CM * EMU_PER_CM)
+    cy = int(cx * HEIGHT / WIDTH)
+    drawing = (
+        "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        f'<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="901" name="能力雷达图" descr="{escape(alt)}"/>'
+        "<wp:cNvGraphicFramePr>"
+        '<a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:nvPicPr>'
+        f'<pic:cNvPr id="901" name="radar.png" descr="{escape(alt)}"/>'
+        "<pic:cNvPicPr/></pic:nvPicPr>"
+        f'<pic:blipFill><a:blip r:embed="{IMAGE_REL_ID}"/><a:stretch><a:fillRect/>'
+        "</a:stretch></pic:blipFill>"
+        "<pic:spPr>"
+        f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        "</pic:spPr></pic:pic></a:graphicData></a:graphic>"
+        "</wp:inline></w:drawing>"
+    )
+    parts = [_para(f"<w:r>{drawing}</w:r>", align="center", after=60)]
+    if caption:
+        parts.append(
+            _para(
+                _run(caption, size=SZ_SMALL, color="7F7F7F"),
+                align="center",
+                after=180,
+            )
+        )
+    return "".join(parts)
+
+
 def _fmt_time(value: datetime | None) -> str:
     """统一按**本地时区**显示。库里存的是 UTC，老师要看的是自己手表上的时间。"""
     if value is None:
@@ -208,7 +274,7 @@ def _section_basic(report: dict[str, Any]) -> str:
 
 def _section_usage(report: dict[str, Any]) -> str:
     usage = report["usage"]
-    parts = [_heading("一、使用情况", level=1)]
+    parts = [_heading("二、使用情况", level=1)]
 
     parts.append(
         _para(
@@ -305,9 +371,83 @@ def _section_usage(report: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _section_ability(report: dict[str, Any]) -> str:
+    """一、能力雷达（六维）。
+
+    图和表是配套的：图负责"一眼看出形状"，表负责"精确读数" ——
+    自己写的 PNG 编码器画不了中文（标准库没有字体），所以图里只有图形，
+    维度名与分数全部交给 Word 用真正的文本排版。
+    """
+    from app.services.png_chart import render_radar_png
+
+    ability = report.get("ability") or {}
+    dimensions = ability.get("dimensions") or []
+
+    parts = [_heading("一、能力雷达（六维）", level=1)]
+    parts.append(
+        _para(
+            _run(
+                ability.get("summary")
+                or "本区间没有可用于评估的记录，六个维度暂按满分显示。",
+                size=SZ_SMALL,
+                color="7F7F7F",
+            ),
+            after=160,
+        )
+    )
+
+    parts.append(
+        _image_paragraph(
+            render_radar_png(dimensions, ability.get("weakest", "")),
+            alt="六维能力雷达图",
+            caption=(
+                "图 1　学生能力雷达图（每圈 25 分；红色顶点为当前最弱的一项）"
+            ),
+        )
+    )
+
+    if not dimensions:
+        return "".join(parts)
+
+    widths = [CONTENT_WIDTH - 1600 - 1600 - 2400, 1600, 1600, 2400]
+    rows = [
+        _text_cell("能力维度", width=widths[0], fill="D9E2F3", bold=True)
+        + _text_cell("得分", width=widths[1], fill="D9E2F3", bold=True, align="center")
+        + _text_cell("依据", width=widths[2], fill="D9E2F3", bold=True, align="center")
+        + _text_cell("该维度看什么", width=widths[3], fill="D9E2F3", bold=True)
+    ]
+    weakest_key = ability.get("weakest", "")
+    for item in sorted(dimensions, key=lambda d: d["score"]):
+        label = item["label"] + ("（最弱）" if item["key"] == weakest_key else "")
+        rows.append(
+            _text_cell(label, width=widths[0], bold=item["key"] == weakest_key)
+            + _text_cell(f"{item['score']} 分", width=widths[1], align="center")
+            + _text_cell(f"{item['evidence_count']} 条", width=widths[2], align="center")
+            + _text_cell(item["hint"], width=widths[3])
+        )
+    parts.append(_table(rows, widths))
+
+    # 说清楚这个分数是怎么来的 —— 教师看到"43 分"必须能知道依据是什么，
+    # 否则这份报告就没法拿来跟学生谈。
+    evidence = ability.get("evidence_total", 0)
+    note = (
+        f"评估依据：本区间内 {ability.get('error_total', 0)} 条错题记录、"
+        f"{ability.get('check_total', 0)} 次代码检测，共 {evidence} 条证据。"
+        "分数由证据的类别与严重程度折算（公式：100 / (1 + 权重和 / 10)，"
+        "下限 15 分），用于横向比较各项强弱，不等同于考试分数。"
+    )
+    if ability.get("unclassified"):
+        note += (
+            f"其中 {ability['unclassified']} 条无法归到具体维度，"
+            "按兜底规则计入了完备性或准确性。"
+        )
+    parts.append(_para(_run(note, size=SZ_SMALL, color="7F7F7F"), before=80))
+    return "".join(parts)
+
+
 def _section_errors(report: dict[str, Any]) -> str:
     errors = report["errors"]
-    parts = [_heading("二、错题整改情况", level=1)]
+    parts = [_heading("三、错题整改情况", level=1)]
 
     parts.append(
         _para(
@@ -410,7 +550,7 @@ def _section_errors(report: dict[str, Any]) -> str:
 
 
 def _section_suggestions(report: dict[str, Any]) -> str:
-    parts = [_heading("三、学习建议", level=1)]
+    parts = [_heading("四、学习建议", level=1)]
     for index, tip in enumerate(report["suggestions"], start=1):
         parts.append(
             _para(_run(f"{index}. {tip}"), after=100)
@@ -465,6 +605,8 @@ CONTENT_TYPES = (
     + '<Default Extension="rels" ContentType='
     + '"application/vnd.openxmlformats-package.relationships+xml"/>'
     + '<Default Extension="xml" ContentType="application/xml"/>'
+    # 雷达图那张 PNG。少这一条 Word 会说"图片无法显示"。
+    + '<Default Extension="png" ContentType="image/png"/>'
     + _override("/word/document.xml", CT_DOCUMENT)
     + _override("/word/styles.xml", CT_STYLES)
     + _override("/word/footer1.xml", CT_FOOTER)
@@ -487,6 +629,8 @@ DOCUMENT_RELS = (
     + f'<Relationships xmlns="{NS_REL}">'
     + _relationship("rId1", f"{REL_OFFICE_DOC}/styles", "styles.xml")
     + _relationship("rId2", f"{REL_OFFICE_DOC}/footer", "footer1.xml")
+    # 雷达图。类型名是 image（不是 picture），Target 是包内相对路径。
+    + _relationship(IMAGE_REL_ID, f"{REL_OFFICE_DOC}/image", "media/radar.png")
     + "</Relationships>"
 )
 
@@ -559,7 +703,7 @@ def _document_xml(body: str) -> str:
     )
     return (
         XML_DECL
-        + f'<w:document xmlns:w="{NS_W}" xmlns:r="{NS_R}">'
+        + f'<w:document xmlns:w="{NS_W}" xmlns:r="{NS_R}" xmlns:wp="{NS_WP}">'
         + f"<w:body>{body}{sect}</w:body></w:document>"
     )
 
@@ -620,6 +764,7 @@ def render_learning_report(report: dict[str, Any]) -> bytes:
                 after=240,
             ),
             _section_basic(report),
+            _section_ability(report),
             _section_usage(report),
             _section_errors(report),
             _section_suggestions(report),
@@ -646,6 +791,12 @@ def render_learning_report(report: dict[str, Any]) -> bytes:
         zout.writestr("word/styles.xml", STYLES)
         zout.writestr("word/footer1.xml", FOOTER)
         zout.writestr("word/_rels/document.xml.rels", DOCUMENT_RELS)
+        # 雷达图。图片二进制直接写进包，不落磁盘临时文件。
+        ability = report.get("ability") or {}
+        zout.writestr(
+            IMAGE_PART,
+            render_radar_png(ability.get("dimensions") or [], ability.get("weakest", "")),
+        )
     return buffer.getvalue()
 
 

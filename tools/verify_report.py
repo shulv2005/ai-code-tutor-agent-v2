@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -88,6 +89,69 @@ def post_json(path: str, body: dict) -> tuple[int, dict]:
         return status, json.loads(payload)
     except json.JSONDecodeError:
         return status, {}
+
+
+def api_json(path: str) -> dict:
+    """GET 一个接口并返回解析后的 JSON（失败返回空字典，由断言去报错）。"""
+    _, payload, _ = request("GET", path)
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+
+
+def http_get_text(path: str) -> str:
+    """GET 一个静态资源并返回文本（前端页面 / JS）。"""
+    _, payload, _ = request("GET", path)
+    return payload.decode("utf-8", errors="replace")
+
+
+def _png_is_valid(payload: bytes) -> tuple[bool, str]:
+    """校验 PNG 的容器结构与每个块的 CRC。
+
+    只判断"字节数大于 0"没有意义：Word 拿到坏图只会显示一个红叉，
+    既不报错也不提示，最后是老师来问"为什么图是一片空白"。
+    """
+    import struct
+    import zlib
+
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        return False, "魔数不对"
+    index = 8
+    names: list[str] = []
+    while index < len(payload):
+        if index + 8 > len(payload):
+            return False, "块头被截断"
+        length = struct.unpack(">I", payload[index : index + 4])[0]
+        tag = payload[index + 4 : index + 8]
+        body = payload[index + 8 : index + 8 + length]
+        crc = struct.unpack(">I", payload[index + 8 + length : index + 12 + length])[0]
+        if zlib.crc32(tag + body) & 0xFFFFFFFF != crc:
+            return False, f"{tag!r} 的 CRC 不匹配"
+        names.append(tag.decode("ascii", errors="replace"))
+        index += 12 + length
+    if names[:1] != ["IHDR"] or names[-1:] != ["IEND"]:
+        return False, f"块顺序异常：{names}"
+    width, height = struct.unpack(">II", payload[16:24])
+    return True, f"{width}×{height}，块 {names}"
+
+
+def _ability_ordering_ok(dimensions: list[dict]) -> bool:
+    """证据多的维度分数不该高于证据少两档以上的维度。
+
+    这是"雷达图能读"的最低要求：如果分数和证据量没有单调关系，
+    图上那个形状就是随机噪声。
+    """
+    pairs = [
+        (item.get("weight", 0), item.get("score", 0))
+        for item in dimensions
+        if isinstance(item.get("weight"), (int, float))
+    ]
+    if len(pairs) < 2:
+        return False
+    pairs.sort()
+    scores = [score for _, score in pairs]
+    return all(a >= b for a, b in zip(scores, scores[1:], strict=False))
 
 
 def prepare_database(db_path: Path, env: dict[str, str]) -> None:
@@ -477,16 +541,22 @@ def main() -> int:
             ]
             blob = "\n".join(texts)
             record("文档里有标题", "学习报告" in blob)
-            record("文档里有使用情况章节", "一、使用情况" in blob)
-            record("文档里有错题整改章节", "二、错题整改情况" in blob)
-            record("文档里有学习建议章节", "三、学习建议" in blob)
+            record("文档里有能力雷达章节", "一、能力雷达（六维）" in blob)
+            record("文档里有使用情况章节", "二、使用情况" in blob)
+            record("文档里有错题整改章节", "三、错题整改情况" in blob)
+            record("文档里有学习建议章节", "四、学习建议" in blob)
             record("文档里有种进去的知识点", "循环边界" in blob and "数组下标" in blob)
             record("文档里有总时长 1 小时 27 分", "1 小时 27 分" in blob)
             record("文档里列出了每次使用明细", "每次使用明细" in blob)
             record("文档里列出了错题明细", "错题明细" in blob)
             record("文档里没有残留的 XML 转义符", "&amp;lt;" not in blob)
+            # 六个能力维度都要落到表里，并说明"依据多少条证据"
+            for label in ("准确性", "健壮性", "规范性", "可读性", "高效性", "完备性"):
+                record(f"能力表里有「{label}」", label in blob)
+            record("能力表说明了评估依据", "评估依据" in blob)
+            record("最弱的那一项被标出来", "（最弱）" in blob)
             tables = list(root.iter(f"{W}tbl"))
-            record("至少 5 张表", len(tables) >= 5, f"{len(tables)} 张")
+            record("至少 9 张表", len(tables) >= 9, f"{len(tables)} 张")
 
         # ---------------- 5. Word 亲自打开 ----------------
         print()
@@ -498,6 +568,88 @@ def main() -> int:
             record("Word 能正常打开导出的文档", ok, detail)
         else:
             print("  --   本机没有 Word，跳过这一项（结构检查已通过）")
+
+        # ---------------- 6. 能力雷达图（PNG + 接口） ----------------
+        print()
+        print("=" * 74)
+        print("6. 能力雷达图（六维打分 / 手写 PNG / 嵌进 docx）")
+        print("=" * 74)
+        with zipfile.ZipFile(docx_path) as zf:
+            names = zf.namelist()
+            png_in_package = "word/media/radar.png" in names
+            record("docx 包里带了 radar.png", png_in_package)
+            if png_in_package:
+                png = zf.read("word/media/radar.png")
+                record(
+                    "radar.png 是合法 PNG（含 CRC 校验）",
+                    *_png_is_valid(png),
+                )
+            content_types = zf.read("[Content_Types].xml").decode("utf-8")
+            record("Content_Types 里登记了 png", 'Extension="png"' in content_types)
+            rels = zf.read("word/_rels/document.xml.rels").decode("utf-8")
+            record("document.xml.rels 里引用了图片", "media/radar.png" in rels)
+            document = zf.read("word/document.xml").decode("utf-8")
+            # xmlns:wp 漏了的话 Word 直接报"文档可能已经损坏"，报错信息
+            # 完全不提命名空间 —— 这条专门盯着它
+            record("声明了 wp: 命名空间", "xmlns:wp=" in document)
+            record("正文里有 w:drawing", "<w:drawing>" in document)
+
+        profile = api_json("/api/v1/report/summary?range=all")
+        ability = (profile or {}).get("ability") or {}
+        dims = ability.get("dimensions") or []
+        record("接口返回六个能力维度", len(dims) == 6, f"{len(dims)} 个")
+        record(
+            "维度键与顺序固定",
+            [d.get("key") for d in dims]
+            == ["completeness", "conventions", "readability",
+                "efficiency", "robustness", "accuracy"],
+            str([d.get("key") for d in dims]),
+        )
+        record("每个维度都有 0-100 的分数", all(0 <= d.get("score", -1) <= 100 for d in dims))
+        record(
+            "每个维度都说明了依据条数",
+            all(isinstance(d.get("evidence_count"), int) for d in dims),
+        )
+        record("给出了最弱 / 最强与极差", bool(ability.get("weakest")) and ability.get("spread") is not None)
+        record("附了一句人话结论", bool(ability.get("summary")))
+        record(
+            "打平之前先按证据量对齐：错得多的那一项分数更低",
+            _ability_ordering_ok(dims),
+        )
+
+        page = http_get_text("/ui/index.html")
+        record("页面里有雷达图容器", 'id="radarChart"' in page)
+        js = http_get_text("/ui/js/app.js")
+        record("雷达图用 createElementNS 画 SVG", "createElementNS" in js)
+
+        # 「没引第三方图表库」只能靠**页面实际加载了什么**来判断。
+        # 两个坑都踩过：
+        #   · 用"文件里出现 chart 这个词"判断 —— 被自己的注释绊倒
+        #     （注释里写着"引 echarts / chart.js 要塞几百 KB"）；
+        #   · 直接正则扫 <script src> —— 会把 HTML 注释里那段
+        #     "Vue 3 接入预留位"的示例代码也算成真的加载了。
+        # 所以先把注释去掉，再看剩下的 <script src>。
+        visible = re.sub(r"<!--.*?-->", "", page, flags=re.S)
+        loaded = re.findall(r'<script[^>]*\bsrc="([^"]+)"', visible, re.I)
+        banned = ("echarts", "chart.js", "chartjs", "d3", "highcharts", "plotly",
+                  "apexcharts", "vue")
+        hit = [src for src in loaded if any(word in src.lower() for word in banned)]
+        record(
+            "雷达图没有引第三方图表库（多下载几百 KB 不划算）",
+            not hit,
+            f"实际加载 {loaded}",
+        )
+        expected_scripts = [
+            "vendor/highlight.min.js",  # 语法高亮
+            "vendor/marked.min.js",     # Markdown -> HTML
+            "vendor/purify.min.js",     # 消毒（AI 生成的 HTML 必须过一遍）
+            "js/app.js",                # 页面逻辑
+        ]
+        record(
+            "页面加载的脚本就是那固定的 4 个（没有偷偷加依赖）",
+            loaded == expected_scripts,
+            f"{loaded}",
+        )
 
     finally:
         proc.kill()

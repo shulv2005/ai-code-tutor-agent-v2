@@ -114,6 +114,38 @@ class ErrorReportSection(BaseModel):
     items: list[ErrorDetailItem] = Field(default_factory=list)
 
 
+class AbilityDimensionItem(BaseModel):
+    """能力雷达图上的一个维度。"""
+
+    key: str = Field(description="维度键：accuracy / robustness / conventions / …")
+    label: str = Field(description="中文名，直接显示")
+    hint: str = Field(description="一句话说明这个维度在看什么")
+    score: int = Field(description="0-100 分；60 分以上算过关")
+    weight: float = Field(description="该维度累计的证据权重（分数就是由它算出来的）")
+    evidence_count: int = Field(description="归到这个维度的记录条数")
+    samples: list[str] = Field(
+        default_factory=list, description="最多 3 条证据样本，用来说明分数是怎么来的"
+    )
+
+
+class AbilityProfile(BaseModel):
+    """六维能力画像（雷达图的数据源）。
+
+    刻意把 `evidence_total` 与 `unclassified` 一起返回：这个分数是启发式评估，
+    界面上必须能说明"依据多少条记录"，否则雷达图就只是一张好看的图。
+    """
+
+    dimensions: list[AbilityDimensionItem] = Field(default_factory=list)
+    error_total: int = Field(default=0, description="参与统计的错题条数")
+    check_total: int = Field(default=0, description="参与统计的检测记录条数")
+    evidence_total: int = Field(default=0, description="上面两者之和")
+    unclassified: int = Field(default=0, description="关键词没命中、兜底归到准确性的条数")
+    weakest: str = Field(default="", description="最低分维度的 key")
+    strongest: str = Field(default="", description="最高分维度的 key")
+    spread: int = Field(default=0, description="最高分与最低分之差")
+    summary: str = Field(default="", description="配雷达图的一句人话结论")
+
+
 class LearningReportResponse(BaseModel):
     """学习报告全量数据（前端「查看报告」用的那个，与导出的 Word 同源）。"""
 
@@ -124,10 +156,15 @@ class LearningReportResponse(BaseModel):
     app_version: str | None = None
     usage: UsageSummaryResponse
     errors: ErrorReportSection
+    ability: AbilityProfile = Field(
+        default_factory=AbilityProfile, description="六维能力画像（雷达图）"
+    )
     suggestions: list[str] = Field(default_factory=list, description="按固定规则生成的学习建议")
 
 
 __all__ = [
+    "AbilityDimensionItem",
+    "AbilityProfile",
     "ErrorDetailItem",
     "ErrorReportSection",
     "ErrorTypeItem",

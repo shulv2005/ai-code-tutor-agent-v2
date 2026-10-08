@@ -273,6 +273,10 @@ const el = {
   reportErrorTotal: document.getElementById('reportErrorTotal'),
   reportWeakBox: document.getElementById('reportWeakBox'),
   reportWeakList: document.getElementById('reportWeakList'),
+  // 能力雷达图（侧栏卡片里那张小的；弹窗里那张大的由渲染函数现取）
+  radarBox: document.getElementById('radarBox'),
+  radarChart: document.getElementById('radarChart'),
+  radarCaption: document.getElementById('radarCaption'),
   reportHint: document.getElementById('reportHint'),
   reportPreview: document.getElementById('reportPreview'),
   reportDownload: document.getElementById('reportDownload'),
@@ -2161,6 +2165,7 @@ async function loadReport() {
     el.reportErrorTotal.textContent = `${data.errors.total} 条`;
 
     renderReportWeakList(data.errors.weak_points || []);
+    renderAbilityRadar(data.ability);
 
     // 区间内既没用过、也没错题：如实说明，而不是显示一堆 0 让人以为坏了
     if (!data.usage.session_count && !data.errors.total) {
@@ -2173,6 +2178,149 @@ async function loadReport() {
   } catch (err) {
     el.reportHint.textContent = `统计失败：${err.message}`;
   }
+}
+
+/* --------------------------------------------------------------------------
+   能力雷达图（六维）—— 手写 SVG
+   --------------------------------------------------------------------------
+   为什么不用图表库：雷达图就是一个正多边形加一个数据多边形，几十行数学；
+   引 echarts / chart.js 要往 vendor/ 里塞几百 KB，和"断网可用、双击就跑"
+   的定位不划算。后端已经把分数算好（见 app/services/ability_service.py），
+   这里只负责画。
+
+   画法：
+     · 6 根轴从圆心均匀散开（每 60°），顶点在正上方（-90° 起）
+     · 4 圈同心网格 + 一圈外框，每圈代表 25 分
+     · 数据多边形按 score/100 的比例落在轴上，描边 + 半透明填充
+     · 顶点画小圆点，最弱的那一项用警示色标出来（一眼看到短板）
+   -------------------------------------------------------------------------- */
+
+/** 侧栏卡片里那张小雷达图的几何参数（与 svg 的 viewBox="0 0 260 240" 对应） */
+const RADAR_VIEW = { width: 260, height: 240, cx: 130, cy: 118, radius: 76 };
+
+/** 极坐标 → 直角坐标。顶点在正上方，顺时针排布。 */
+function radarPoint(index, total, ratio, view) {
+  const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
+  return {
+    x: view.cx + Math.cos(angle) * view.radius * ratio,
+    y: view.cy + Math.sin(angle) * view.radius * ratio,
+  };
+}
+
+function radarPolygon(dimensions, ratioOf, view) {
+  return dimensions
+    .map((item, index) => {
+      const point = radarPoint(index, dimensions.length, ratioOf(item), view);
+      return `${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+    })
+    .join(' ');
+}
+
+/**
+ * 把雷达图画进指定的 <svg>。
+ *
+ * 抽成"传入 svg + 几何参数"而不是只画固定那一张：侧栏卡片里是小图
+ * （260×240），报告弹窗里是大图（300×280），两处必须是**同一份数据、
+ * 同一套画法**，只是半径不同。分开写两份迟早会画得不一样。
+ */
+function renderAbilityRadarInto(svg, ability, view) {
+  if (!svg) return;
+
+  const dimensions = (ability && ability.dimensions) || [];
+  svg.innerHTML = '';
+
+  // SVG 元素必须用 createElementNS 创建：createElement 出来的是 HTML 元素，
+  // 浏览器会把它当成未知标签而不渲染 —— 而且不报错，只是"什么都没画出来"。
+  const NS = 'http://www.w3.org/2000/svg';
+  const make = (tag, attrs) => {
+    const node = document.createElementNS(NS, tag);
+    Object.entries(attrs || {}).forEach(([key, value]) => node.setAttribute(key, value));
+    return node;
+  };
+
+  if (!dimensions.length) return;
+
+  // ---- 1. 网格：4 圈同心多边形（每圈 25 分）----
+  for (let ring = 4; ring >= 1; ring -= 1) {
+    svg.appendChild(make('polygon', {
+      points: radarPolygon(dimensions, () => ring / 4, view),
+      class: 'radar__grid',
+    }));
+  }
+
+  // ---- 2. 轴线 ----
+  dimensions.forEach((_, index) => {
+    const outer = radarPoint(index, dimensions.length, 1, view);
+    svg.appendChild(make('line', {
+      x1: view.cx, y1: view.cy, x2: outer.x, y2: outer.y,
+      class: 'radar__axis',
+    }));
+  });
+
+  // ---- 3. 数据多边形 + 顶点 ----
+  const weakestKey = ability.weakest;
+  svg.appendChild(make('polygon', {
+    points: radarPolygon(dimensions, (item) => Math.max(0, item.score) / 100, view),
+    class: 'radar__area',
+  }));
+
+  dimensions.forEach((item, index) => {
+    const point = radarPoint(
+      index, dimensions.length, Math.max(0, item.score) / 100, view,
+    );
+    const isWeak = item.key === weakestKey;
+    const dot = make('circle', {
+      cx: point.x, cy: point.y,
+      r: isWeak ? 3.8 : 2.6,
+      class: isWeak ? 'radar__dot radar__dot--weak' : 'radar__dot',
+    });
+    // 悬停给出"这一项多少分、依据几条"，不用去对照下面的表
+    const tip = make('title');
+    tip.textContent =
+      `${item.label}（${item.hint}）：${item.score} 分，依据 ${item.evidence_count} 条记录`;
+    dot.appendChild(tip);
+    svg.appendChild(dot);
+  });
+
+  // ---- 4. 轴标签：名字 + 分数 ----
+  // 放在轴外侧一点（1.2 倍半径），否则文字会压在多边形上。
+  // 按方位决定对齐方式，避免标签戳出 viewBox。
+  const labelRatio = view.height > 260 ? 1.24 : 1.3;
+  dimensions.forEach((item, index) => {
+    const angle = (Math.PI * 2 * index) / dimensions.length - Math.PI / 2;
+    const anchor = radarPoint(index, dimensions.length, labelRatio, view);
+    const cos = Math.cos(angle);
+    const textAnchor = cos > 0.3 ? 'start' : cos < -0.3 ? 'end' : 'middle';
+    // 正下方/正上方那两项让一点，免得和相邻标签叠在一起
+    const dy = Math.abs(cos) < 0.3 ? (Math.sin(angle) > 0 ? 2 : -4) : 0;
+
+    const label = make('text', {
+      x: anchor.x, y: anchor.y + dy, class: 'radar__label',
+      'text-anchor': textAnchor,
+    });
+    label.textContent = item.label;
+    svg.appendChild(label);
+
+    const score = make('text', {
+      x: anchor.x, y: anchor.y + dy + 12,
+      class: item.key === weakestKey ? 'radar__score radar__score--weak' : 'radar__score',
+      'text-anchor': textAnchor,
+    });
+    score.textContent = String(item.score);
+    svg.appendChild(score);
+  });
+}
+
+/** 侧栏卡片里那张小雷达图 */
+function renderAbilityRadar(ability) {
+  const dimensions = (ability && ability.dimensions) || [];
+  if (!dimensions.length) {
+    if (el.radarCaption) el.radarCaption.textContent = '暂无能力数据';
+    if (el.radarChart) el.radarChart.innerHTML = '';
+    return;
+  }
+  renderAbilityRadarInto(el.radarChart, ability, RADAR_VIEW);
+  if (el.radarCaption) el.radarCaption.textContent = ability.summary || '';
 }
 
 /** 易错知识点条形图（复用下半屏 .weak 的样式，保持观感一致） */
@@ -2217,6 +2365,17 @@ function renderReportPreview(data) {
 
   const tips = data.suggestions.map((tip) => `<li>${escapeHtml(tip)}</li>`).join('');
 
+  // 能力雷达：弹窗里放大的那一份（侧栏卡片里有一个小的，两处同一份数据）。
+  // 用 <svg> 占位，渲染完 HTML 之后再往里画 —— 雷达图是动态生成的 SVG 节点，
+  // 串进 innerHTML 字符串会又长又难维护。
+  const ability = data.ability || { dimensions: [] };
+  const abilityRows = (ability.dimensions || []).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.label)}<span class="radar__hint">${escapeHtml(item.hint)}</span></td>
+      <td class="is-num">${item.score}</td>
+      <td class="is-num">${item.evidence_count}</td>
+    </tr>`).join('');
+
   el.reportModalBody.innerHTML = `
     <p class="report-view__section">基本信息</p>
     <dl class="report-view__kv">
@@ -2225,14 +2384,23 @@ function renderReportPreview(data) {
       <dt>生成时间</dt><dd>${escapeHtml(formatServerTime(data.generated_at))}</dd>
     </dl>
 
-    <p class="report-view__section">一、使用情况</p>
+    <p class="report-view__section">一、能力雷达（六维）</p>
+    <p class="radar__note">${escapeHtml(ability.summary || '')}</p>
+    <div class="radar radar--large" id="radarLargeBox"></div>
+    ${abilityRows ? `
+      <table class="report-view__table">
+        <thead><tr><th>能力维度</th><th>得分</th><th>依据条数</th></tr></thead>
+        <tbody>${abilityRows}</tbody>
+      </table>` : ''}
+
+    <p class="report-view__section">二、使用情况</p>
     <dl class="report-view__kv">
       <dt>累计有效时长</dt><dd>${escapeHtml(data.usage.total_text)}</dd>
       <dt>使用天数 / 次数</dt><dd>${data.usage.active_days} 天 / ${data.usage.session_count} 次</dd>
       <dt>平均每次</dt><dd>${escapeHtml(data.usage.average_text)}</dd>
     </dl>
 
-    <p class="report-view__section">二、错题整改情况</p>
+    <p class="report-view__section">三、错题整改情况</p>
     ${weakRows ? `
       <table class="report-view__table">
         <thead><tr><th>易错知识点</th><th>次数</th><th>占比</th></tr></thead>
@@ -2245,9 +2413,28 @@ function renderReportPreview(data) {
         <tbody>${errorRows}</tbody>
       </table>` : ''}
 
-    <p class="report-view__section">三、学习建议</p>
+    <p class="report-view__section">四、学习建议</p>
     <ol class="report-view__tip">${tips}</ol>
   `;
+
+  // innerHTML 之后再画大雷达图（这时候容器才存在）。
+  // 刻意用 createElementNS 现造 svg 而**不**在模板串里写 id：
+  // svg 的命名空间必须对，而且 tools/check_frontend.py 会检查
+  // "JS 里 getElementById 拿的 id 必须在 index.html 里存在" ——
+  // 动态生成的东西不该绕开那条检查，所以干脆不要 id。
+  const holder = el.reportModalBody.querySelector('.radar--large');
+  if (holder) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const large = document.createElementNS(NS, 'svg');
+    large.setAttribute('class', 'radar__svg radar__svg--large');
+    large.setAttribute('viewBox', '0 0 300 280');
+    large.setAttribute('role', 'img');
+    large.setAttribute('aria-label', '六维能力雷达图');
+    holder.appendChild(large);
+    renderAbilityRadarInto(large, ability, {
+      width: 300, height: 280, cx: 150, cy: 132, radius: 92,
+    });
+  }
 }
 
 /** 点「查看报告内容」 */

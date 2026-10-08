@@ -28,6 +28,8 @@ from fastapi import APIRouter, Header, Query, Response
 from app.api.deps import AppSettingsDep, DbSession
 from app.core.identity import STUDENT_HEADER, resolve_student_id
 from app.schemas.report import (
+    AbilityDimensionItem,
+    AbilityProfile,
     ErrorDetailItem,
     ErrorReportSection,
     ErrorTypeItem,
@@ -107,7 +109,36 @@ def _to_response(report: dict) -> LearningReportResponse:
             by_language=[LanguageItem(**item) for item in errors["by_language"]],
             items=[ErrorDetailItem(**item) for item in errors["items"]],
         ),
+        ability=_ability_from(report.get("ability")),
         suggestions=list(report["suggestions"]),
+    )
+
+
+def _ability_from(raw: dict | None) -> AbilityProfile:
+    """把能力画像的 dict 收敛成 Pydantic 模型（数据缺失时返回空画像）。"""
+    if not raw:
+        return AbilityProfile()
+    return AbilityProfile(
+        dimensions=[
+            AbilityDimensionItem(
+                key=item["key"],
+                label=item["label"],
+                hint=item["hint"],
+                score=int(item["score"]),
+                weight=float(item["weight"]),
+                evidence_count=int(item["evidence_count"]),
+                samples=list(item.get("samples", [])),
+            )
+            for item in raw.get("dimensions", [])
+        ],
+        error_total=int(raw.get("error_total", 0)),
+        check_total=int(raw.get("check_total", 0)),
+        evidence_total=int(raw.get("evidence_total", 0)),
+        unclassified=int(raw.get("unclassified", 0)),
+        weakest=str(raw.get("weakest", "")),
+        strongest=str(raw.get("strongest", "")),
+        spread=int(raw.get("spread", 0)),
+        summary=str(raw.get("summary", "")),
     )
 
 

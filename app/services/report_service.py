@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import utc_now
+from app.services.ability_service import AbilityService
 from app.services.tutor_service import UNKNOWN_KNOWLEDGE_POINT, TutorService
 from app.services.usage_service import UsageService, format_duration, parse_range
 
@@ -178,6 +179,9 @@ class ReportService:
         errors = await TutorService.list_errors_since(
             session, student_id=student_id, since=since, limit=REPORT_ERROR_LIMIT
         )
+        # 六维能力画像：与错题明细同源（都按区间过滤），因此雷达图的形状
+        # 和下面的错题表永远对得上，不会出现"图说弱在循环、表里一条循环都没有"。
+        ability = await AbilityService.build(session, student_id=student_id, since=since)
 
         total_seconds = int(usage["total_seconds"])
         session_count = int(usage["session_count"])
@@ -248,6 +252,7 @@ class ReportService:
                 ],
             },
         }
+        report["ability"] = ability
         report["suggestions"] = _suggestions(
             total_seconds=total_seconds,
             session_count=session_count,
