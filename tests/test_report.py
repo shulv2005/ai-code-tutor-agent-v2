@@ -409,12 +409,12 @@ def _sample_ability() -> dict:
     会被标出来、并且排到表的第一行。
     """
     rows = [
-        ("completeness", "完备性", "分支覆盖与代码完整度", 70, 6.0, 2),
-        ("conventions", "规范性", "语法与编码规范", 83, 3.0, 1),
-        ("readability", "可读性", "命名、注释与结构是否清楚", 100, 0.0, 0),
-        ("efficiency", "高效性", "算法与复杂度意识", 71, 6.0, 2),
-        ("robustness", "健壮性", "边界、空值与异常处理", 53, 9.0, 3),
-        ("accuracy", "准确性", "逻辑与结果是否正确", 91, 1.5, 1),
+        ("completeness", "完备性", "分支覆盖与代码完整度", 70, 6.0, 2, -4),
+        ("conventions", "规范性", "语法与编码规范", 83, 3.0, 1, 0),
+        ("readability", "可读性", "命名、注释与结构是否清楚", 100, 0.0, 0, 0),
+        ("efficiency", "高效性", "算法与复杂度意识", 71, 6.0, 2, -6),
+        ("robustness", "健壮性", "边界、空值与异常处理", 53, 9.0, 3, 7),
+        ("accuracy", "准确性", "逻辑与结果是否正确", 91, 1.5, 1, 3),
     ]
     return {
         "dimensions": [
@@ -426,8 +426,10 @@ def _sample_ability() -> dict:
                 "weight": weight,
                 "evidence_count": count,
                 "samples": [],
+                "delta": delta,
+                "delta_label": f"+{delta}" if delta > 0 else (str(delta) if delta < 0 else "0"),
             }
-            for key, label, hint, score, weight, count in rows
+            for key, label, hint, score, weight, count, delta in rows
         ],
         "error_total": 9,
         "check_total": 0,
@@ -437,6 +439,10 @@ def _sample_ability() -> dict:
         "strongest": "readability",
         "spread": 47,
         "summary": "依据 9 条记录（错题 9 条、检测 0 次）得出。目前最弱的是「健壮性」。",
+        "headline": "最弱：健壮性 53 分（依据 9 条记录）",
+        "has_trend": True,
+        "previous_total": 7,
+        "trend_note": "进步最大的是「健壮性」（+7 分）；需要留意「高效性」（-6 分）。",
     }
 
 
@@ -827,6 +833,142 @@ def test_ability_unknown_knowledge_point_counts_as_completeness(sqlite_path: Pat
     assert "无法判定到具体维度" in profile["summary"]
 
 
+def test_ability_trend_compares_with_the_previous_equal_window(sqlite_path: Path) -> None:
+    """趋势要拿"上一个等长区间"比，而且两个区间不能重叠。"""
+
+    async def run(minutes: list[float]) -> dict:
+        from app.models.error_log import StudentErrorLog
+
+        async with _db() as session:
+            for offset in minutes:
+                session.add(
+                    StudentErrorLog(
+                        student_id="local",
+                        code_snippet="pass",
+                        language="python",
+                        filename="h.py",
+                        error_type="运行时错误",
+                        knowledge_point="空指针",
+                        knowledge_points_json="[]",
+                        ai_feedback="没判空",
+                        source="diagnose",
+                        created_at=utc_now() - timedelta(minutes=offset),
+                    )
+                )
+            await session.commit()
+            since, _ = parse_range("7")
+            return await AbilityService.build_with_trend(
+                session, student_id="local", since=since
+            )
+
+    # 上一周期（7~14 天前）错 5 次空指针，本周期只错 1 次 → 健壮性应当明显回升
+    profile = asyncio.run(
+        run([60, 8 * 1440, 8 * 1440 + 1, 8 * 1440 + 2, 8 * 1440 + 3, 8 * 1440 + 4])
+    )
+    by_key = {item["key"]: item for item in profile["dimensions"]}
+    assert profile["has_trend"] is True
+    assert profile["previous_total"] == 5, profile["previous_total"]
+    assert profile["evidence_total"] == 1, profile["evidence_total"]
+    assert by_key["robustness"]["delta"] > 0
+    assert by_key["robustness"]["delta_label"].startswith("+")
+    assert "进步最大" in profile["trend_note"]
+    # 没出错的维度两边都是满分，变化量是 0 而不是 null
+    assert by_key["efficiency"]["delta"] == 0
+
+
+def test_ability_trend_is_absent_for_all_history(sqlite_path: Path) -> None:
+    """range=all 没有"上一个周期"可言，delta 必须是 null 而不是编一个 0。"""
+
+    async def run() -> dict:
+        async with _db() as session:
+            return await AbilityService.build_with_trend(session, student_id="local")
+
+    profile = asyncio.run(run())
+    assert profile["has_trend"] is False
+    assert all(item["delta"] is None for item in profile["dimensions"])
+    assert all(item["delta_label"] == "" for item in profile["dimensions"])
+    assert profile["trend_note"] == ""
+
+
+def test_ability_trend_has_no_baseline_when_previous_window_is_empty(
+    sqlite_path: Path,
+) -> None:
+    """上一周期一条记录都没有 → 不许显示"退步"。
+
+    这是实测截图里抓到的 bug：上一周期六项都是 100 分（因为没有证据），
+    本期只要错几条，每一项都会显示成几十分的"退步"（截图里是一排 -31 / -55
+    的红字）。可学生上一周期根本没做过题 —— 这个退步是假的。
+    没有基线就该整列写"—"。
+    """
+
+    async def run() -> dict:
+        from app.models.error_log import StudentErrorLog
+
+        async with _db() as session:
+            # 只有本周期（1 小时前）的记录；上一周期（8 天前起）一条都没有
+            session.add(
+                StudentErrorLog(
+                    student_id="local",
+                    code_snippet="pass",
+                    language="python",
+                    filename="h.py",
+                    error_type="运行时错误",
+                    knowledge_point="空指针",
+                    knowledge_points_json="[]",
+                    ai_feedback="没判空",
+                    source="diagnose",
+                    created_at=utc_now() - timedelta(hours=1),
+                )
+            )
+            await session.commit()
+            since, _ = parse_range("7")
+            return await AbilityService.build_with_trend(
+                session, student_id="local", since=since
+            )
+
+    profile = asyncio.run(run())
+    assert profile["previous_total"] == 0
+    assert profile["has_trend"] is False
+    # 关键：不能出现"假退步"
+    assert all(item["delta"] is None for item in profile["dimensions"]), [
+        (item["label"], item["delta"]) for item in profile["dimensions"]
+    ]
+    assert profile["trend_note"] == "上一周期没有可对比的记录，本次是第一个有数据的周期。"
+    # 本期分数本身照常算（健壮性确实被扣了）
+    by_key = {item["key"]: item for item in profile["dimensions"]}
+    assert by_key["robustness"]["score"] < 100
+
+
+def test_ability_headline_is_short_enough_for_the_sidebar(sqlite_path: Path) -> None:
+    """侧栏卡片位置小，headline 必须是一句话（长句留给弹窗与 Word）。"""
+
+    async def run() -> dict:
+        from app.models.error_log import StudentErrorLog
+
+        async with _db() as session:
+            session.add(
+                StudentErrorLog(
+                    student_id="local",
+                    code_snippet="pass",
+                    language="python",
+                    filename="h.py",
+                    error_type="运行时错误",
+                    knowledge_point="空指针",
+                    knowledge_points_json="[]",
+                    ai_feedback="没判空",
+                    source="diagnose",
+                )
+            )
+            await session.commit()
+            return await AbilityService.build(session, student_id="local")
+
+    profile = asyncio.run(run())
+    assert profile["headline"].startswith("最弱：健壮性")
+    # summary 是完整段落，headline 必须短得多
+    assert len(profile["headline"]) < 40
+    assert len(profile["summary"]) > len(profile["headline"])
+
+
 async def _ability_of(rows: list[tuple[str, str, str]]) -> dict:
     """在临时库里插若干错题，然后算一份能力画像。"""
     from app.models.error_log import StudentErrorLog
@@ -995,8 +1137,13 @@ def test_docx_ability_table_marks_the_weakest() -> None:
 
     ability_rows = [r for r in rows if r and r[0].startswith("健壮性")]
     assert ability_rows, "能力表里没找到健壮性那一行"
+    # 列顺序：维度 / 得分 / 较上一周期 / 依据条数 / 该维度看什么
     assert "（最弱）" in ability_rows[0][0]
     assert ability_rows[0][1] == "53 分"
-    assert ability_rows[0][2] == "3 条"
+    assert ability_rows[0][2] == "+7"
+    assert ability_rows[0][3] == "3 条"
     # 只标一个最弱
     assert sum(1 for r in rows if r and "（最弱）" in r[0]) == 1
+    # 持平的那一项写"持平"而不是"0"（人话优先）
+    readable = [r for r in rows if r and r[0] == "可读性"]
+    assert readable and readable[0][2] == "持平"

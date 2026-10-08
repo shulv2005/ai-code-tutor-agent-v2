@@ -210,7 +210,7 @@ function register(id, rect) {
   // 学习报告（侧边栏 ④ + 预览弹窗）
   'reportCard', 'reportLiveTime', 'reportRange',
   'reportTotalTime', 'reportDays', 'reportErrorTotal',
-  'reportWeakBox', 'reportWeakList', 'reportHint',
+  'reportHint',
   'reportPreview', 'reportDownload',
   'reportModal', 'reportModalBody', 'reportModalClose', 'reportModalDownload',
   'refreshReport',
@@ -506,7 +506,7 @@ const epilogue = `
   report: { HEARTBEAT_INTERVAL_MS, LIVE_TICK_MS, LIVE_DRIFT_CAP_SECONDS, REPORT_BASE, USAGE_BASE },
   reportState,
   formatClock, renderReportLive, sendHeartbeat, startUsageHeartbeat,
-  currentReportRange, syncReportLinks, loadReport, renderReportWeakList,
+  currentReportRange, syncReportLinks, loadReport,
   renderReportPreview, openReportPreview, closeReportPreview, bindReportCard,
   // 能力雷达图（六维，手写 SVG）
   radar: { RADAR_VIEW },
@@ -1954,10 +1954,11 @@ check('使用天数显示成「3 天」', el.reportDays.textContent === '3 天',
   el.reportDays.textContent);
 check('错题总数显示成「6 条」', el.reportErrorTotal.textContent === '6 条',
   el.reportErrorTotal.textContent);
-check('易错知识点条形图渲染出 2 条', el.reportWeakList.innerHTML.split('weak__item').length - 1 === 2);
-check('易错知识点里带上了次数与占比',
-  el.reportWeakList.innerHTML.includes('循环边界')
-  && el.reportWeakList.innerHTML.includes('3 次') && el.reportWeakList.innerHTML.includes('50%'));
+// 报告卡片里**不再**放易错知识点条形图：右侧「⑥ 错题本 & 举一反三」本来就有一份
+// 常驻的，而且两边分组口径不同，同一屏出现两处对不上的排行比没有更让人困惑。
+// 这里断言那个渲染函数确实已经删掉了 —— 否则它就成了没人调用的死代码。
+check('报告卡片里重复的易错知识点渲染函数已删除',
+  typeof api.renderReportWeakList === 'undefined');
 check('提示语说明当前区间', el.reportHint.textContent.includes('最近 30 天'),
   el.reportHint.textContent);
 
@@ -1993,7 +1994,6 @@ check('弹窗里的导出链接也同步更新',
   el.reportModalDownload.href.includes('range=7'), el.reportModalDownload.href);
 check('空区间如实说明"没有使用记录"，而不是显示一堆 0',
   el.reportHint.textContent.includes('没有使用记录'), el.reportHint.textContent);
-check('空区间时不显示易错知识点块', el.reportWeakBox.hidden === true);
 
 // ---- 7. 报告预览弹窗 ----
 el.reportRange.value = '30';
@@ -2040,16 +2040,19 @@ console.log('='.repeat(72));
 
 const ABILITY = {
   dimensions: [
-    { key: 'completeness', label: '完备性', hint: '分支覆盖', score: 80, weight: 3, evidence_count: 1, samples: [] },
-    { key: 'conventions', label: '规范性', hint: '编码规范', score: 60, weight: 6, evidence_count: 2, samples: [] },
-    { key: 'readability', label: '可读性', hint: '命名注释', score: 100, weight: 0, evidence_count: 0, samples: [] },
-    { key: 'efficiency', label: '高效性', hint: '复杂度', score: 40, weight: 12, evidence_count: 3, samples: [] },
-    { key: 'robustness', label: '健壮性', hint: '边界异常', score: 20, weight: 20, evidence_count: 4, samples: [] },
-    { key: 'accuracy', label: '准确性', hint: '逻辑结果', score: 90, weight: 1, evidence_count: 1, samples: [] },
+    { key: 'completeness', label: '完备性', hint: '分支覆盖', score: 80, weight: 3, evidence_count: 1, samples: [], delta: -4, delta_label: '-4' },
+    { key: 'conventions', label: '规范性', hint: '编码规范', score: 60, weight: 6, evidence_count: 2, samples: [], delta: 0, delta_label: '0' },
+    { key: 'readability', label: '可读性', hint: '命名注释', score: 100, weight: 0, evidence_count: 0, samples: [], delta: 0, delta_label: '0' },
+    { key: 'efficiency', label: '高效性', hint: '复杂度', score: 40, weight: 12, evidence_count: 3, samples: [], delta: 12, delta_label: '+12' },
+    { key: 'robustness', label: '健壮性', hint: '边界异常', score: 20, weight: 20, evidence_count: 4, samples: [], delta: 7, delta_label: '+7' },
+    { key: 'accuracy', label: '准确性', hint: '逻辑结果', score: 90, weight: 1, evidence_count: 1, samples: [], delta: 0, delta_label: '0' },
   ],
   evidence_total: 11, error_total: 11, check_total: 0, unclassified: 0,
   weakest: 'robustness', strongest: 'readability', spread: 80,
   summary: '依据 11 条记录得出，最弱的是健壮性。',
+  headline: '最弱：健壮性 20 分（依据 11 条记录）',
+  has_trend: true, previous_total: 9,
+  trend_note: '进步最大的是「高效性」（+12 分）；需要留意「完备性」（-4 分）。',
 };
 
 const nsBefore = nsCalls.length;
@@ -2103,6 +2106,35 @@ check('顶点带 title（悬停能看到分数与依据条数）',
   svg.children.filter((t) => t.tagName === 'CIRCLE' && t.children.length === 1).length === 6);
 check('配了人话结论', el.radarCaption.textContent.includes('健壮性'),
   el.radarCaption.textContent);
+// 侧栏地方小：用的是短句 headline，不是那段完整结论
+check('侧栏显示的是短句 headline 而不是长结论',
+  el.radarCaption.textContent === ABILITY.headline);
+
+// ---- 趋势：比上一周期 +N / -N ----
+const scoreTexts = svg.children
+  .filter((t) => t.tagName === 'TEXT' && String(t._attrs.class).includes('radar__score'))
+  .map((t) => t.textContent);
+check('分数旁边带上了与上一周期的差值',
+  scoreTexts.includes('20 +7') && scoreTexts.includes('40 +12'),
+  scoreTexts.join(' / '));
+check('持平的维度不显示 "0"（少一点噪音）',
+  scoreTexts.includes('60') && !scoreTexts.includes('60 0'), scoreTexts.join(' / '));
+check('退步的维度标红',
+  svg.children.some((t) => t.tagName === 'TEXT'
+    && String(t._attrs.class).includes('radar__score--down')
+    && t.textContent === '80 -4'));
+check('没有对比周期时不显示差值',
+  (() => {
+    api.renderAbilityRadar({
+      dimensions: [{ key: 'accuracy', label: '准确性', hint: 'x', score: 90,
+        weight: 1, evidence_count: 1, samples: [], delta: null, delta_label: '' }],
+      weakest: 'accuracy', strongest: 'accuracy', spread: 0,
+      summary: '', headline: '最弱：准确性 90 分', has_trend: false,
+    });
+    return el.radarChart.children
+      .filter((t) => t.tagName === 'TEXT' && String(t._attrs.class).includes('radar__score'))
+      .every((t) => t.textContent === '90');
+  })());
 
 // 一条记录都没有：不画多边形，只留一句话说明
 nsCalls.length = 0;

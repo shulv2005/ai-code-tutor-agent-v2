@@ -181,7 +181,10 @@ class ReportService:
         )
         # 六维能力画像：与错题明细同源（都按区间过滤），因此雷达图的形状
         # 和下面的错题表永远对得上，不会出现"图说弱在循环、表里一条循环都没有"。
-        ability = await AbilityService.build(session, student_id=student_id, since=since)
+        # 带趋势版本：同时算上一个等长区间，给出"比上一周期 +N/−N"。
+        ability = await AbilityService.build_with_trend(
+            session, student_id=student_id, since=since
+        )
 
         total_seconds = int(usage["total_seconds"])
         session_count = int(usage["session_count"])

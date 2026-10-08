@@ -315,14 +315,17 @@
                role="img" aria-labelledby="radarTitle">
             <title id="radarTitle">六维能力雷达图</title>
           </svg>
+          <!-- 侧栏只放一句话（最弱那一项）；完整结论在弹窗与导出的 Word 里 -->
           <p class="radar__caption" id="radarCaption">正在统计能力…</p>
         </div>
 
-        <!-- 易错知识点 Top 5（条形图） -->
-        <div id="reportWeakBox" hidden>
-          <p class="report__subtitle">易错知识点</p>
-          <ul class="weak" id="reportWeakList"></ul>
-        </div>
+        <!--
+          这里刻意**不放**易错知识点条形图了。
+          右边「⑥ 错题本 & 举一反三」里本来就有一份常驻的，而且两边的分组口径
+          不同（这份按知识点整条分组、那份会拆开一条记录里的多个知识点），
+          同一屏出现两张"易错知识点"却对不上，比没有更让人困惑。
+          这一份的完整表格留在「查看报告内容」弹窗和导出的 Word 里。
+        -->
 
         <p class="report__hint" id="reportHint">正在统计…</p>
 

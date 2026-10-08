@@ -409,21 +409,44 @@ def _section_ability(report: dict[str, Any]) -> str:
     if not dimensions:
         return "".join(parts)
 
-    widths = [CONTENT_WIDTH - 1600 - 1600 - 2400, 1600, 1600, 2400]
+    trend = ability.get("trend_note")
+    if trend:
+        parts.append(
+            _para(_run(trend, size=SZ_SMALL, color="1F3864"), after=120)
+        )
+
+    # 五列：维度 / 得分 / 较上一周期 / 依据条数 / 这一维在看什么。
+    # 加上「较上一周期」这一列的理由和网页端一样：只有绝对分数时，
+    # 看不出学生是在变好还是变差。
+    widths = [2300, 1300, 1500, 1400, CONTENT_WIDTH - 2300 - 1300 - 1500 - 1400]
+    has_trend = bool(ability.get("has_trend"))
     rows = [
         _text_cell("能力维度", width=widths[0], fill="D9E2F3", bold=True)
         + _text_cell("得分", width=widths[1], fill="D9E2F3", bold=True, align="center")
-        + _text_cell("依据", width=widths[2], fill="D9E2F3", bold=True, align="center")
-        + _text_cell("该维度看什么", width=widths[3], fill="D9E2F3", bold=True)
+        + _text_cell(
+            "较上一周期" if has_trend else "较上一周期",
+            width=widths[2],
+            fill="D9E2F3",
+            bold=True,
+            align="center",
+        )
+        + _text_cell("依据", width=widths[3], fill="D9E2F3", bold=True, align="center")
+        + _text_cell("该维度看什么", width=widths[4], fill="D9E2F3", bold=True)
     ]
     weakest_key = ability.get("weakest", "")
     for item in sorted(dimensions, key=lambda d: d["score"]):
         label = item["label"] + ("（最弱）" if item["key"] == weakest_key else "")
+        delta = item.get("delta")
+        # 没有对比周期时写"—"而不是"0"：0 是"没变化"，"—"才是"没法比"
+        delta_text = "—" if delta is None or not item.get("delta_label") else item["delta_label"]
+        if delta == 0:
+            delta_text = "持平"
         rows.append(
             _text_cell(label, width=widths[0], bold=item["key"] == weakest_key)
             + _text_cell(f"{item['score']} 分", width=widths[1], align="center")
-            + _text_cell(f"{item['evidence_count']} 条", width=widths[2], align="center")
-            + _text_cell(item["hint"], width=widths[3])
+            + _text_cell(delta_text, width=widths[2], align="center")
+            + _text_cell(f"{item['evidence_count']} 条", width=widths[3], align="center")
+            + _text_cell(item["hint"], width=widths[4])
         )
     parts.append(_table(rows, widths))
 
@@ -436,6 +459,13 @@ def _section_ability(report: dict[str, Any]) -> str:
         "分数由证据的类别与严重程度折算（公式：100 / (1 + 权重和 / 10)，"
         "下限 15 分），用于横向比较各项强弱，不等同于考试分数。"
     )
+    if has_trend:
+        note += (
+            f"「较上一周期」是与前一个等长区间（{ability.get('previous_total', 0)} 条证据）"
+            "相比的分数变化。"
+        )
+    else:
+        note += "本次统计范围为全部历史，没有可对比的上一个周期，故该列记作「—」。"
     if ability.get("unclassified"):
         note += (
             f"其中 {ability['unclassified']} 条无法归到具体维度，"

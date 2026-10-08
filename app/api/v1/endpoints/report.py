@@ -128,6 +128,8 @@ def _ability_from(raw: dict | None) -> AbilityProfile:
                 weight=float(item["weight"]),
                 evidence_count=int(item["evidence_count"]),
                 samples=list(item.get("samples", [])),
+                delta=None if item.get("delta") is None else int(item["delta"]),
+                delta_label=str(item.get("delta_label", "")),
             )
             for item in raw.get("dimensions", [])
         ],
@@ -139,6 +141,10 @@ def _ability_from(raw: dict | None) -> AbilityProfile:
         strongest=str(raw.get("strongest", "")),
         spread=int(raw.get("spread", 0)),
         summary=str(raw.get("summary", "")),
+        headline=str(raw.get("headline", "")),
+        has_trend=bool(raw.get("has_trend", False)),
+        previous_total=int(raw.get("previous_total", 0)),
+        trend_note=str(raw.get("trend_note", "")),
     )
 
 

@@ -52,6 +52,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.base import utc_now
 from app.models.code_check import CodeCheckRecord
 from app.models.error_log import StudentErrorLog
 from app.services.tutor_service import UNKNOWN_KNOWLEDGE_POINT
@@ -231,12 +232,17 @@ class AbilityService:
         *,
         student_id: str,
         since: datetime | None = None,
+        until: datetime | None = None,
     ) -> dict[str, object]:
         """算一份能力画像。
 
         返回结构同时服务于三处：网页雷达图、报告弹窗、导出的 Word。
         每一项都带 `evidence_count` 与最多 3 条 `samples` —— 界面上要能回答
         "凭什么给我这个分"，否则这个雷达图就只是一张好看的图。
+
+        `since` / `until` 是**左闭右开**区间。有 `until` 才能把"上一个等长区间"
+        单独算出来做对比（见 `build_with_trend`），否则两次统计会把同一批
+        记录算两遍。
         """
         weights: dict[str, float] = {item.key: 0.0 for item in DIMENSIONS}
         counts: dict[str, int] = {item.key: 0 for item in DIMENSIONS}
@@ -249,6 +255,8 @@ class AbilityService:
         condition = StudentErrorLog.student_id == student_id
         if since is not None:
             condition = condition & (StudentErrorLog.created_at >= since)
+        if until is not None:
+            condition = condition & (StudentErrorLog.created_at < until)
         stmt = (
             select(StudentErrorLog)
             .where(condition)
@@ -288,6 +296,8 @@ class AbilityService:
         check_condition = CodeCheckRecord.id.isnot(None)
         if since is not None:
             check_condition = CodeCheckRecord.created_at >= since
+        if until is not None:
+            check_condition = check_condition & (CodeCheckRecord.created_at < until)
         check_stmt = (
             select(CodeCheckRecord)
             .where(check_condition)
@@ -363,7 +373,105 @@ class AbilityService:
                 spread=spread,
                 unclassified=unclassified,
             ),
+            # 侧栏那张卡片地方小，用短句；长句留给弹窗与 Word
+            "headline": _headline(dimensions, weakest, error_total + check_total),
         }
+
+    @staticmethod
+    async def build_with_trend(
+        session: AsyncSession,
+        *,
+        student_id: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, object]:
+        """当前区间 + **与上一个等长区间**的对比。
+
+        只有当前分数时，学生看到"健壮性 45 分"并不知道自己是在变好还是变差。
+        补上"较上一周期 +12"，这张图才从快照变成趋势 —— 而趋势才是学生真正
+        关心的（努力了有没有用）。
+
+        只在能确定区间长度时才做对比：`range=all` 没有"上一个周期"可言，
+        这时候 delta 全是 null，界面不显示这一列（而不是编一个 0 出来）。
+        """
+        profile = await AbilityService.build(
+            session, student_id=student_id, since=since, until=until
+        )
+
+        previous: dict[str, object] | None = None
+        if since is not None:
+            span = (until or utc_now()) - since
+            previous = await AbilityService.build(
+                session, student_id=student_id, since=since - span, until=since
+            )
+
+        old_scores = (
+            {item["key"]: item["score"] for item in previous["dimensions"]}
+            if previous
+            else {}
+        )
+        # 上一周期**一条记录都没有**时不做对比。
+        #
+        # 不加这个判断的话，上一周期六项都是 100 分，本期每项都会显示成
+        # 几十分的"退步"（实测截图里就是 -31 / -55 一排红字）——
+        # 但学生上一周期根本没做过题，这个"退步"是假的。
+        # 没有基线就如实写"—"，不编数字出来。
+        comparable = previous is not None and previous["evidence_total"] > 0
+        for item in profile["dimensions"]:
+            if not comparable:
+                item["delta"] = None
+                item["delta_label"] = ""
+                continue
+            delta = item["score"] - old_scores.get(item["key"], item["score"])
+            item["delta"] = delta
+            item["delta_label"] = (
+                f"+{delta}" if delta > 0 else (str(delta) if delta < 0 else "0")
+            )
+
+        profile["has_trend"] = comparable
+        profile["previous_total"] = previous["evidence_total"] if previous else 0
+        profile["trend_note"] = _trend_note(profile, previous, comparable)
+        return profile
+
+
+def _headline(
+    dimensions: list[dict], weakest: dict, evidence_total: int
+) -> str:
+    """侧栏用的一句话：只说最弱那一项，不铺开。"""
+    if evidence_total == 0:
+        return "暂无可分析的记录，六项均为满分"
+    return (
+        f"最弱：{weakest['label']} {weakest['score']} 分"
+        f"（依据 {evidence_total} 条记录）"
+    )
+
+
+def _trend_note(
+    profile: dict[str, object],
+    previous: dict[str, object] | None,
+    comparable: bool,
+) -> str:
+    """把"进步最大 / 退步最大"讲成一句话。"""
+    if previous is None:
+        return ""
+    # 上一周期一条记录都没有：谈不上"变化"，如实说明，不编一个数字出来
+    if not comparable:
+        return "上一周期没有可对比的记录，本次是第一个有数据的周期。"
+
+    dimensions = [item for item in profile["dimensions"] if item.get("delta") is not None]
+    if not dimensions:
+        return ""
+
+    improved = max(dimensions, key=lambda d: d["delta"])
+    declined = min(dimensions, key=lambda d: d["delta"])
+    parts: list[str] = []
+    if improved["delta"] > 0:
+        parts.append(f"进步最大的是「{improved['label']}」（+{improved['delta']} 分）")
+    if declined["delta"] < 0:
+        parts.append(f"需要留意「{declined['label']}」（{declined['delta']} 分）")
+    if not parts:
+        parts.append("六项与上一周期相比没有变化")
+    return "；".join(parts) + "。"
 
 
 def _parse_issues(raw: str | None) -> list[dict] | None:

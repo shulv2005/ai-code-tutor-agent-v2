@@ -271,8 +271,6 @@ const el = {
   reportTotalTime: document.getElementById('reportTotalTime'),
   reportDays: document.getElementById('reportDays'),
   reportErrorTotal: document.getElementById('reportErrorTotal'),
-  reportWeakBox: document.getElementById('reportWeakBox'),
-  reportWeakList: document.getElementById('reportWeakList'),
   // 能力雷达图（侧栏卡片里那张小的；弹窗里那张大的由渲染函数现取）
   radarBox: document.getElementById('radarBox'),
   radarChart: document.getElementById('radarChart'),
@@ -2164,7 +2162,6 @@ async function loadReport() {
     el.reportDays.textContent = `${data.usage.active_days} 天`;
     el.reportErrorTotal.textContent = `${data.errors.total} 条`;
 
-    renderReportWeakList(data.errors.weak_points || []);
     renderAbilityRadar(data.ability);
 
     // 区间内既没用过、也没错题：如实说明，而不是显示一堆 0 让人以为坏了
@@ -2301,12 +2298,21 @@ function renderAbilityRadarInto(svg, ability, view) {
     label.textContent = item.label;
     svg.appendChild(label);
 
+    const hasDelta = item.delta !== null && item.delta !== undefined && item.delta !== 0;
     const score = make('text', {
       x: anchor.x, y: anchor.y + dy + 12,
-      class: item.key === weakestKey ? 'radar__score radar__score--weak' : 'radar__score',
+      class: [
+        'radar__score',
+        item.key === weakestKey ? 'radar__score--weak' : '',
+        // 退步用红色提醒；进步保持默认灰（不需要再夸一次）
+        hasDelta && item.delta < 0 ? 'radar__score--down' : '',
+      ].filter(Boolean).join(' '),
       'text-anchor': textAnchor,
     });
-    score.textContent = String(item.score);
+    // 有对比周期时把变化量跟在分数后面。只有分数的话，学生看不出
+    // 自己是在变好还是变差 —— 趋势才是他真正关心的。
+    score.textContent =
+      hasDelta ? `${item.score} ${item.delta_label}` : String(item.score);
     svg.appendChild(score);
   });
 }
@@ -2320,31 +2326,9 @@ function renderAbilityRadar(ability) {
     return;
   }
   renderAbilityRadarInto(el.radarChart, ability, RADAR_VIEW);
-  if (el.radarCaption) el.radarCaption.textContent = ability.summary || '';
+  if (el.radarCaption) el.radarCaption.textContent = ability.headline || ability.summary || '';
 }
 
-/** 易错知识点条形图（复用下半屏 .weak 的样式，保持观感一致） */
-function renderReportWeakList(points) {
-  if (!el.reportWeakBox || !el.reportWeakList) return;
-  if (!points.length) {
-    el.reportWeakBox.hidden = true;
-    el.reportWeakList.innerHTML = '';
-    return;
-  }
-  const max = Math.max(...points.map((item) => item.count)) || 1;
-  el.reportWeakList.innerHTML = points.slice(0, 5).map((item) => {
-    const percent = Math.round((item.count / max) * 100);
-    return `
-      <li class="weak__item">
-        <div class="weak__head">
-          <span>${escapeHtml(item.knowledge_point)}</span>
-          <span class="weak__count">${item.count} 次 · ${escapeHtml(item.ratio)}</span>
-        </div>
-        <div class="weak__bar"><span style="width:${percent}%"></span></div>
-      </li>`;
-  }).join('');
-  el.reportWeakBox.hidden = false;
-}
 
 /** 报告预览弹窗的内容：与导出的 Word 同源，先看一眼老师会看到什么 */
 function renderReportPreview(data) {
@@ -2373,6 +2357,7 @@ function renderReportPreview(data) {
     <tr>
       <td>${escapeHtml(item.label)}<span class="radar__hint">${escapeHtml(item.hint)}</span></td>
       <td class="is-num">${item.score}</td>
+      <td class="is-num ${item.delta < 0 ? 'is-down' : ''}">${escapeHtml(item.delta_label || '—')}</td>
       <td class="is-num">${item.evidence_count}</td>
     </tr>`).join('');
 
@@ -2386,10 +2371,11 @@ function renderReportPreview(data) {
 
     <p class="report-view__section">一、能力雷达（六维）</p>
     <p class="radar__note">${escapeHtml(ability.summary || '')}</p>
+    ${ability.trend_note ? `<p class="radar__note radar__note--trend">${escapeHtml(ability.trend_note)}</p>` : ''}
     <div class="radar radar--large" id="radarLargeBox"></div>
     ${abilityRows ? `
       <table class="report-view__table">
-        <thead><tr><th>能力维度</th><th>得分</th><th>依据条数</th></tr></thead>
+        <thead><tr><th>能力维度</th><th>得分</th><th>较上一周期</th><th>依据条数</th></tr></thead>
         <tbody>${abilityRows}</tbody>
       </table>` : ''}
 

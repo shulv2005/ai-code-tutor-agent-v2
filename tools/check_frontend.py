@@ -408,6 +408,27 @@ def check_report_export(page: dict, html: str, js: str) -> None:
     if overrides_name:
         failures.append("前端覆盖了下载文件名，会盖掉后端带学生标识的命名")
 
+    # ---- 报告卡片里不能出现两份"易错知识点"----
+    # 右侧「⑥ 错题本 & 举一反三」本来就有一份常驻的排行，而且两边分组口径不同
+    # （那份会拆开一条记录里的多个知识点），同一屏出现两处对不上的排行
+    # 比没有更让人困惑。所以报告卡片里那份删掉了，这里盯住别再被加回来。
+    dup = 'id="reportWeakList"' in html or 'id="reportWeakBox"' in html
+    print(f"  报告卡片里没有重复的易错知识点排行 : {'是 ✓' if not dup else '否 ✗'}")
+    if dup:
+        failures.append("报告卡片里又出现了易错知识点排行，与右下角那份对不上")
+    if "renderReportWeakList" in js:
+        failures.append("renderReportWeakList 还在 JS 里（区块已删，成了死代码）")
+
+    # ---- 雷达图要能显示趋势 ----
+    print(f"  雷达图分数带上与上一周期的差值 : "
+          f"{'是 ✓' if 'delta_label' in js else '否 ✗'}")
+    if "delta_label" not in js:
+        failures.append("雷达图没有显示与上一周期的差值（只有分数看不出在进步还是退步）")
+    print(f"  侧栏用短句（headline）而不是整段结论 : "
+          f"{'是 ✓' if 'ability.headline' in js else '否 ✗'}")
+    if "ability.headline" not in js:
+        failures.append("侧栏卡片没有使用短句 headline，长结论会把卡片撑得很高")
+
 
 def read_base(js: str, name: str) -> str:
     """从 JS 里读出接口前缀常量（避免两边写死后悄悄对不上）。"""

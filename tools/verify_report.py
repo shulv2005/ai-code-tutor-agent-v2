@@ -612,9 +612,34 @@ def main() -> int:
         )
         record("给出了最弱 / 最强与极差", bool(ability.get("weakest")) and ability.get("spread") is not None)
         record("附了一句人话结论", bool(ability.get("summary")))
+        record("侧栏用的短句 headline 比完整结论短",
+              bool(ability.get("headline"))
+              and len(ability["headline"]) < len(ability["summary"]),
+              ability.get("headline", ""))
         record(
             "打平之前先按证据量对齐：错得多的那一项分数更低",
             _ability_ordering_ok(dims),
+        )
+
+        # ---- 趋势（较上一周期）----
+        # 核心不变量：有基线 <=> 上一周期有证据 <=> 至少一项有 delta。
+        # 三者必须同时成立，否则就会出现"没有基线却显示退步"这种假数据
+        # （实测抓到过：上一周期 0 条记录，本期一排 -31 / -55 的红字）。
+        has_delta = any(item.get("delta") is not None for item in dims)
+        record(
+            "趋势三要素一致（有基线 ⇔ 上一周期有证据 ⇔ 有差值）",
+            ability.get("has_trend") == (ability.get("previous_total", 0) > 0) == has_delta,
+            f"has_trend={ability.get('has_trend')} 上一周期={ability.get('previous_total')} 有差值={has_delta}",
+        )
+        if not ability.get("has_trend"):
+            record(
+                "没有基线时 delta 整列为空，不编造退步",
+                all(item.get("delta") is None for item in dims),
+            )
+        record("报了上一周期的证据条数", "previous_total" in ability)
+        record(
+            "能力表里带「较上一周期」一列",
+            "较上一周期" in blob,
         )
 
         page = http_get_text("/ui/index.html")

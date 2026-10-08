@@ -126,6 +126,11 @@ class AbilityDimensionItem(BaseModel):
     samples: list[str] = Field(
         default_factory=list, description="最多 3 条证据样本，用来说明分数是怎么来的"
     )
+    delta: int | None = Field(
+        default=None,
+        description="与上一个等长区间相比的分数变化；全部历史（range=all）时为 null",
+    )
+    delta_label: str = Field(default="", description="上面那个数带符号的写法，如 +12 / -8 / 0")
 
 
 class AbilityProfile(BaseModel):
@@ -143,7 +148,13 @@ class AbilityProfile(BaseModel):
     weakest: str = Field(default="", description="最低分维度的 key")
     strongest: str = Field(default="", description="最高分维度的 key")
     spread: int = Field(default=0, description="最高分与最低分之差")
-    summary: str = Field(default="", description="配雷达图的一句人话结论")
+    summary: str = Field(default="", description="配雷达图的一句完整结论（弹窗与 Word 用）")
+    headline: str = Field(default="", description="只讲最弱那一项的短句（侧栏卡片用）")
+    has_trend: bool = Field(
+        default=False, description="是否有可对比的上一个周期（range=all 时为 false）"
+    )
+    previous_total: int = Field(default=0, description="上一个周期的证据条数")
+    trend_note: str = Field(default="", description="进步最大 / 需要留意 的一句话")
 
 
 class LearningReportResponse(BaseModel):

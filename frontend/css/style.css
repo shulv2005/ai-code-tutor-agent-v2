@@ -674,10 +674,16 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
    保证任何元素加上这个类都会隐藏，不会出现"某个卡片自带 display:flex 就藏不掉"的问题。
    ------------------------------------------------------------------------- */
 .placeholder {
-  display: block;              /* 默认状态：显示 */
+  /* 用 flex + justify-content 把提示**垂直居中**。
+     原来是 display:block + 固定上内边距，在代码区那种整屏高的空框里，
+     两行提示会贴在顶部、下面留一大片白 —— 实测截图里非常不工整。 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   height: 100%;
   min-height: 140px;
-  padding: 40px 20px;
+  padding: 24px 20px;
   text-align: center;
   color: var(--text-faint);
 }
@@ -1143,11 +1149,6 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .report__stat:first-child dd { font-size: 16px; }
 
-.report__subtitle {
-  margin: 0 0 6px;
-  font-size: 12.5px;
-  color: var(--text-dim);
-}
 
 .report__hint {
   margin: 8px 0 10px;
@@ -1233,6 +1234,12 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   font-weight: 700;
 }
 
+/* 比上一周期退步：也标红（进步不标，避免一屏都是彩色） */
+.radar__score--down { fill: var(--error); }
+
+/* 能力明细表里的"较上一周期"列：退步标红 */
+.is-down { color: var(--error); }
+
 /* 配雷达图的那句结论（自然语言，行高给足） */
 .radar__caption {
   margin: 6px 0 0;
@@ -1247,6 +1254,13 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--text-dim);
+}
+
+/* 「进步最大 / 需要留意」那句，用左侧竖线单独区分出来 */
+.radar__note--trend {
+  padding-left: 10px;
+  border-left: 3px solid var(--accent-border);
+  color: var(--text);
 }
 
 /* 能力表里维度名下面的小字说明 */
