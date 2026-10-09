@@ -40,6 +40,14 @@ from app.services.ability_service import (
 )
 from app.services.png_chart import Canvas, render_radar_png
 from app.services.report_docx import render_learning_report
+from app.services.report_insight import (
+    RADAR_GUIDE,
+    build_insights,
+    level_of,
+    recurring_lines,
+    recurring_summary,
+    summarize_causes,
+)
 from app.services.report_service import ReportService
 from app.services.tutor_service import TutorService
 from app.services.usage_service import (
@@ -398,6 +406,37 @@ def _sample_report() -> dict:
             ],
         },
         "ability": _sample_ability(),
+        "insights": {
+            "threshold": 85,
+            "summary": "本区间最需要补的是「健壮性」（53 分，薄弱）。下面逐项说明成因与改进方向。",
+            "items": [
+                {
+                    "key": "robustness",
+                    "label": "健壮性",
+                    "hint": "边界、空值与异常处理",
+                    "score": 53,
+                    "level": "薄弱",
+                    "evidence_count": 3,
+                    "contributors": [
+                        {"knowledge_point": "空指针", "error_type": "运行时错误", "count": 2},
+                        {"knowledge_point": "数组下标", "error_type": "运行时错误", "count": 1},
+                    ],
+                    "advice": "主要卡在「空指针」（运行时错误）出现 2 次。建议先问参数会不会是空。",
+                }
+            ],
+        },
+        "recurring": {
+            "min_records": 2,
+            "summary": "下表列出的是只在与某一类错误相关的错题里反复出现的语句。",
+            "items": [
+                {
+                    "line": "for i in range(len(x) - 1):",
+                    "count": 3,
+                    "knowledge_point": "循环边界",
+                    "group_records": 3,
+                }
+            ],
+        },
         "suggestions": ["「循环边界」累计错 2 次，建议重做。"],
     }
 
@@ -440,6 +479,7 @@ def _sample_ability() -> dict:
         "spread": 47,
         "summary": "依据 9 条记录（错题 9 条、检测 0 次）得出。目前最弱的是「健壮性」。",
         "headline": "最弱：健壮性 53 分（依据 9 条记录）",
+        "guide": RADAR_GUIDE,
         "has_trend": True,
         "previous_total": 7,
         "trend_note": "进步最大的是「健壮性」（+7 分）；需要留意「高效性」（-6 分）。",
@@ -483,14 +523,18 @@ def test_docx_contains_the_actual_data() -> None:
     )
     assert "学习报告" in blob
     assert "一、能力雷达（六维）" in blob
-    assert "二、使用情况" in blob
-    assert "三、错题整改情况" in blob
-    assert "四、学习建议" in blob
+    assert "二、弱项细分与提升建议" in blob
+    assert "三、反复出错的语句" in blob
+    assert "四、使用情况" in blob
+    assert "五、错题整改情况" in blob
+    assert "六、学习建议（总体）" in blob
+    # 「怎么读这张图」必须在图前面，否则老师看不懂六个角和红点代表什么
+    assert "这张图把六项能力分别画在六根轴上" in blob
     assert "1 小时 27 分" in blob
     assert "循环边界" in blob
     assert "range 少遍历一个元素" in blob
     # 表格：基本信息 / 能力维度 / 使用汇总 / 按天 / 每次明细 / 知识点 / 类型 / 语言 / 错题明细
-    assert len(list(root.iter(f"{W}tbl"))) >= 9
+    assert len(list(root.iter(f"{W}tbl"))) >= 11
     # 六个能力维度都要出现在表里，并且要说明"依据多少条证据"
     for label in ("准确性", "健壮性", "规范性", "可读性", "高效性", "完备性"):
         assert label in blob, label
@@ -967,6 +1011,185 @@ def test_ability_headline_is_short_enough_for_the_sidebar(sqlite_path: Path) -> 
     # summary 是完整段落，headline 必须短得多
     assert len(profile["headline"]) < 40
     assert len(profile["summary"]) > len(profile["headline"])
+
+
+# ---------------------------------------------------------------------------
+# 9. 弱项细分、提升建议、反复出错的语句
+# ---------------------------------------------------------------------------
+def _fake_row(point: str, code: str):
+    """造一条"像 StudentErrorLog"的对象（只要 recurring_lines 用到的两个属性）。"""
+
+    class Row:
+        knowledge_point = point
+        code_snippet = code
+
+        def knowledge_points(self) -> list[str]:
+            return [point]
+
+    return Row()
+
+
+def test_insight_level_thresholds() -> None:
+    assert level_of(100) == "优秀"
+    assert level_of(90) == "优秀"
+    assert level_of(89) == "良好"
+    assert level_of(75) == "良好"
+    assert level_of(74) == "待加强"
+    assert level_of(60) == "待加强"
+    assert level_of(59) == "薄弱"
+    assert level_of(0) == "薄弱"
+
+
+def test_insight_only_lists_weak_dimensions_sorted_ascending() -> None:
+    """只展开低于阈值的维度，并且最该补的排最前。"""
+    profile = {
+        "dimensions": [
+            {"key": "accuracy", "label": "准确性", "hint": "h", "score": 95,
+             "evidence_count": 0, "contributors": []},
+            {"key": "robustness", "label": "健壮性", "hint": "h", "score": 40,
+             "evidence_count": 3,
+             "contributors": [
+                 {"knowledge_point": "空指针", "error_type": "运行时错误", "count": 3}
+             ]},
+            {"key": "efficiency", "label": "高效性", "hint": "h", "score": 70,
+             "evidence_count": 2, "contributors": []},
+        ]
+    }
+    items = build_insights(profile)
+    assert [item["label"] for item in items] == ["健壮性", "高效性"]
+    assert items[0]["level"] == "薄弱"
+    assert items[1]["level"] == "待加强"
+    # 95 分那一项不出现（达标了，不该占篇幅）
+    assert all(item["label"] != "准确性" for item in items)
+
+
+def test_insight_advice_mentions_the_actual_cause() -> None:
+    """建议要能回答"是因为什么"—— 把拖后腿的知识点写进开头。
+
+    只给一句"多练习"等于没说；报告要能指到具体知识点与次数上。
+    """
+    profile = {
+        "dimensions": [
+            {"key": "completeness", "label": "完备性", "hint": "h", "score": 45,
+             "evidence_count": 4,
+             "contributors": [
+                 {"knowledge_point": "括号不匹配", "error_type": "语法错误", "count": 3},
+                 {"knowledge_point": "分支遗漏", "error_type": "语法错误", "count": 1},
+             ]},
+        ]
+    }
+    advice = build_insights(profile)[0]["advice"]
+    assert "括号不匹配" in advice
+    assert "3 次" in advice
+    assert "分支遗漏" in advice
+    # 还给了可执行的建议，而不只是复述现象
+    assert len(advice) > 60
+
+
+def test_insight_all_clear_message() -> None:
+    assert build_insights({"dimensions": []}) == []
+    assert "都达到了设定标准" in summarize_causes([])
+    assert "最需要补" in summarize_causes(
+        build_insights(
+            {
+                "dimensions": [
+                    {"key": "accuracy", "label": "准确性", "hint": "h", "score": 30,
+                     "evidence_count": 2, "contributors": []},
+                ]
+            }
+        )
+    )
+
+
+def test_recurring_lines_pick_the_discriminative_statement() -> None:
+    """核心：每个知识点只留**只在这一类错题里出现**的那一句。
+
+    第一版按"出现次数"排，结果 `def total(...)`、`result = 0` 这些样板行
+    全部上榜 —— 学生反复交同一个文件时，等于把整份源码列出来。
+    """
+    loop = (
+        "def total(scores):\n"
+        "    result = 0\n"
+        "    for i in range(len(scores) - 1):\n"
+        "        result += scores[i]\n"
+        "    return result\n"
+    )
+    null = "def head(items):\n    result = items[0].name\n    return result\n"
+    rows = (
+        [_fake_row("循环边界", loop) for _ in range(3)]
+        + [_fake_row("空指针", null) for _ in range(2)]
+    )
+    items = recurring_lines(rows)
+    picked = {item["knowledge_point"]: item["line"] for item in items}
+    assert picked["循环边界"] == "for i in range(len(scores) - 1):"
+    assert picked["空指针"] == "result = items[0].name"
+    # 每个知识点只留一行
+    assert len(items) == len(picked)
+    # 样板行不许上榜
+    for item in items:
+        assert not item["line"].startswith("def ")
+        assert item["line"] not in ("return result", "result = 0")
+
+
+def test_recurring_lines_ignore_one_off_errors() -> None:
+    """只错了一次的行不算"反复"。"""
+    rows = [_fake_row("循环边界", "for i in range(len(x) - 1):\n")]
+    assert recurring_lines(rows) == []
+
+
+def test_recurring_lines_keep_the_syntax_error_on_a_def_line() -> None:
+    """少了冒号的 def / if 行本身就是语法错误，不能被"def 前缀是样板行"埋掉。
+
+    实测案例：一组「括号不匹配」的错题里，出错的就是 `def add(a, b)`（少冒号），
+    但同文件里还有 `return a - b`。第一版把 def 行统一扣分，结果选中了无辜的
+    return 行 —— 报告指着正确代码说"这句一直在错"，比不指还糟。
+    """
+    code = "def add(a, b)\n    return a - b\n"
+    rows = [_fake_row("括号不匹配", code), _fake_row("括号不匹配", code)]
+    lines = [item["line"] for item in recurring_lines(rows)]
+    assert lines == ["def add(a, b)"], lines
+
+
+def test_recurring_lines_skip_a_normal_def_line() -> None:
+    """正常收尾的 def 行（带冒号）仍是样板行，不该被选中。"""
+    code = (
+        "def total(xs):\n"
+        "    for i in range(len(xs) - 1):\n"
+        "        print(i)\n"
+        "    return 0\n"
+    )
+    rows = [_fake_row("循环边界", code), _fake_row("循环边界", code)]
+    lines = [item["line"] for item in recurring_lines(rows)]
+    assert lines and not lines[0].startswith("def "), lines
+
+
+def test_recurring_lines_skip_short_and_symbol_only_lines() -> None:
+    rows = [
+        _fake_row("循环边界", "}\nreturn\nfor i in range(len(x) - 1):\n"),
+        _fake_row("循环边界", "}\nreturn\nfor i in range(len(x) - 1):\n"),
+    ]
+    lines = [item["line"] for item in recurring_lines(rows)]
+    assert lines and all(len(line) >= 6 for line in lines)
+    assert "}" not in lines
+
+
+def test_recurring_summary_explains_when_nothing_found() -> None:
+    assert "没有错题记录" in recurring_summary([], record_count=0)
+    # 有错题但定位不出来时要解释原因，而不是只说"没有"
+    text = recurring_summary([], record_count=5)
+    assert "同一份代码" in text
+    assert "没有错题记录" not in text
+
+
+def test_report_exposes_insights_and_recurring(client: TestClient) -> None:
+    body = client.get("/api/v1/report/summary?range=all").json()
+    assert "insights" in body and "recurring" in body
+    assert set(body["insights"]) == {"items", "summary", "threshold"}
+    assert set(body["recurring"]) == {"items", "summary", "min_records"}
+    # guide 是前后端与 Word 共用的同一份说明
+    assert len(body["ability"]["guide"]) > 60
+    # 原始错题行属于内部数据，不该出现在接口响应里
+    assert "error_rows" not in body["ability"]
 
 
 async def _ability_of(rows: list[tuple[str, str, str]]) -> dict:

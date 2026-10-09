@@ -30,12 +30,17 @@ from app.core.identity import STUDENT_HEADER, resolve_student_id
 from app.schemas.report import (
     AbilityDimensionItem,
     AbilityProfile,
+    ContributorItem,
     ErrorDetailItem,
     ErrorReportSection,
     ErrorTypeItem,
+    InsightItem,
+    InsightSection,
     KnowledgePointItem,
     LanguageItem,
     LearningReportResponse,
+    RecurringItem,
+    RecurringSection,
     UsageDailyItem,
     UsageSessionItem,
     UsageSummaryResponse,
@@ -110,6 +115,8 @@ def _to_response(report: dict) -> LearningReportResponse:
             items=[ErrorDetailItem(**item) for item in errors["items"]],
         ),
         ability=_ability_from(report.get("ability")),
+        insights=_insights_from(report.get("insights")),
+        recurring=_recurring_from(report.get("recurring")),
         suggestions=list(report["suggestions"]),
     )
 
@@ -130,6 +137,14 @@ def _ability_from(raw: dict | None) -> AbilityProfile:
                 samples=list(item.get("samples", [])),
                 delta=None if item.get("delta") is None else int(item["delta"]),
                 delta_label=str(item.get("delta_label", "")),
+                contributors=[
+                    ContributorItem(
+                        knowledge_point=str(one["knowledge_point"]),
+                        error_type=str(one["error_type"]),
+                        count=int(one["count"]),
+                    )
+                    for one in item.get("contributors", [])
+                ],
             )
             for item in raw.get("dimensions", [])
         ],
@@ -142,9 +157,59 @@ def _ability_from(raw: dict | None) -> AbilityProfile:
         spread=int(raw.get("spread", 0)),
         summary=str(raw.get("summary", "")),
         headline=str(raw.get("headline", "")),
+        guide=str(raw.get("guide", "")),
         has_trend=bool(raw.get("has_trend", False)),
         previous_total=int(raw.get("previous_total", 0)),
         trend_note=str(raw.get("trend_note", "")),
+    )
+
+
+def _insights_from(raw: dict | None) -> InsightSection:
+    """弱项细分与提升建议。"""
+    if not raw:
+        return InsightSection()
+    return InsightSection(
+        items=[
+            InsightItem(
+                key=str(item["key"]),
+                label=str(item["label"]),
+                hint=str(item["hint"]),
+                score=int(item["score"]),
+                level=str(item["level"]),
+                evidence_count=int(item["evidence_count"]),
+                contributors=[
+                    ContributorItem(
+                        knowledge_point=str(one["knowledge_point"]),
+                        error_type=str(one["error_type"]),
+                        count=int(one["count"]),
+                    )
+                    for one in item.get("contributors", [])
+                ],
+                advice=str(item.get("advice", "")),
+            )
+            for item in raw.get("items", [])
+        ],
+        summary=str(raw.get("summary", "")),
+        threshold=int(raw.get("threshold", 0)),
+    )
+
+
+def _recurring_from(raw: dict | None) -> RecurringSection:
+    """反复出错的语句。"""
+    if not raw:
+        return RecurringSection()
+    return RecurringSection(
+        items=[
+            RecurringItem(
+                line=str(item["line"]),
+                count=int(item["count"]),
+                knowledge_point=str(item["knowledge_point"]),
+                group_records=int(item["group_records"]),
+            )
+            for item in raw.get("items", [])
+        ],
+        summary=str(raw.get("summary", "")),
+        min_records=int(raw.get("min_records", 0)),
     )
 
 

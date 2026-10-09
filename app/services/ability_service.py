@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -55,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.base import utc_now
 from app.models.code_check import CodeCheckRecord
 from app.models.error_log import StudentErrorLog
+from app.services.report_insight import RADAR_GUIDE
 from app.services.tutor_service import UNKNOWN_KNOWLEDGE_POINT
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,9 @@ CHECK_RECORD_LIMIT = 200
 
 # 每个维度最多留几条证据样本，供界面展示"凭什么给我这个分"
 MAX_SAMPLES = 3
+
+# 每个维度最多列几条"拖后腿的知识点"（报告里做弱项细分用）
+MAX_CONTRIBUTORS = 4
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,11 @@ class AbilityService:
         weights: dict[str, float] = {item.key: 0.0 for item in DIMENSIONS}
         counts: dict[str, int] = {item.key: 0 for item in DIMENSIONS}
         samples: dict[str, list[str]] = {item.key: [] for item in DIMENSIONS}
+        # 每个维度"被什么拖下去的"：{(知识点, 错误类型): 次数}
+        contributors: dict[str, Counter[tuple[str, str]]] = {
+            item.key: Counter() for item in DIMENSIONS
+        }
+        error_rows: list[StudentErrorLog] = []
         error_total = 0
         check_total = 0
         unclassified = 0
@@ -265,6 +275,7 @@ class AbilityService:
         )
         for item in (await session.execute(stmt)).scalars().all():
             error_total += 1
+            error_rows.append(item)
 
             # 「知识点都标注不出来」本身就是信号：说明提交的片段太短、
             # 模型看不出上下文。这是**完备性**的问题（代码/上下文不完整），
@@ -289,6 +300,9 @@ class AbilityService:
                 unclassified += 1
             weights[key] += weight_for_error(item.error_type)
             counts[key] += 1
+            # 记下"是哪一类问题把这个维度拖下去的"：知识点 + 错误类型。
+            # 报告要能回答"完备性差是因为什么"，光有一个分数是答不上来的。
+            contributors[key][(item.knowledge_point, item.error_type)] += 1
             if len(samples[key]) < MAX_SAMPLES:
                 samples[key].append(_clip(f"{item.knowledge_point}：{item.ai_feedback}"))
 
@@ -342,6 +356,14 @@ class AbilityService:
                 "weight": round(weights[item.key], 2),
                 "evidence_count": counts[item.key],
                 "samples": samples[item.key],
+                # 「这个维度为什么低」：按次数倒序的知识点 + 错误类型，最多 4 条。
+                # 报告里"完备性差是由于什么情况导致的"就靠它回答。
+                "contributors": [
+                    {"knowledge_point": point, "error_type": error_type, "count": count}
+                    for (point, error_type), count in contributors[item.key].most_common(
+                        MAX_CONTRIBUTORS
+                    )
+                ],
             }
             for item in DIMENSIONS
         ]
@@ -375,6 +397,12 @@ class AbilityService:
             ),
             # 侧栏那张卡片地方小，用短句；长句留给弹窗与 Word
             "headline": _headline(dimensions, weakest, error_total + check_total),
+            # 「怎么读这张图」由后端给，前端与 Word 共用同一份文案 ——
+            # 两处各写一遍迟早会不一致。
+            "guide": RADAR_GUIDE,
+            # 原始错题行交给报告做"反复出错的语句"分析（见 report_insight.py）。
+            # 只在这一个方法里返回，不往 API 契约里带 —— 那是几 KB 的代码文本。
+            "error_rows": error_rows,
         }
 
     @staticmethod

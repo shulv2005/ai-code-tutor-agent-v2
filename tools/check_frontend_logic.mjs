@@ -1995,6 +1995,24 @@ check('弹窗里的导出链接也同步更新',
 check('空区间如实说明"没有使用记录"，而不是显示一堆 0',
   el.reportHint.textContent.includes('没有使用记录'), el.reportHint.textContent);
 
+const ABILITY = {
+  dimensions: [
+    { key: 'completeness', label: '完备性', hint: '分支覆盖', score: 80, weight: 3, evidence_count: 1, samples: [], delta: -4, delta_label: '-4' },
+    { key: 'conventions', label: '规范性', hint: '编码规范', score: 60, weight: 6, evidence_count: 2, samples: [], delta: 0, delta_label: '0' },
+    { key: 'readability', label: '可读性', hint: '命名注释', score: 100, weight: 0, evidence_count: 0, samples: [], delta: 0, delta_label: '0' },
+    { key: 'efficiency', label: '高效性', hint: '复杂度', score: 40, weight: 12, evidence_count: 3, samples: [], delta: 12, delta_label: '+12' },
+    { key: 'robustness', label: '健壮性', hint: '边界异常', score: 20, weight: 20, evidence_count: 4, samples: [], delta: 7, delta_label: '+7' },
+    { key: 'accuracy', label: '准确性', hint: '逻辑结果', score: 90, weight: 1, evidence_count: 1, samples: [], delta: 0, delta_label: '0' },
+  ],
+  evidence_total: 11, error_total: 11, check_total: 0, unclassified: 0,
+  weakest: 'robustness', strongest: 'readability', spread: 80,
+  summary: '依据 11 条记录得出，最弱的是健壮性。',
+  headline: '最弱：健壮性 20 分（依据 11 条记录）',
+  guide: '这张图把六项能力分别画在六根轴上，从圆心到最外圈代表 0 到 100 分。',
+  has_trend: true, previous_total: 9,
+  trend_note: '进步最大的是「高效性」（+12 分）；需要留意「完备性」（-4 分）。',
+};
+
 // ---- 7. 报告预览弹窗 ----
 el.reportRange.value = '30';
 queueResponse({
@@ -2017,6 +2035,31 @@ queueResponse({
       ai_feedback_excerpt: '少遍历一个元素', code_excerpt: 'x', line_count: 3,
     }],
   },
+  ability: {
+    dimensions: ABILITY.dimensions, evidence_total: ABILITY.evidence_total,
+    weakest: ABILITY.weakest, strongest: ABILITY.strongest, spread: ABILITY.spread,
+    summary: ABILITY.summary, headline: ABILITY.headline, guide: ABILITY.guide,
+    has_trend: ABILITY.has_trend, previous_total: ABILITY.previous_total,
+    trend_note: ABILITY.trend_note,
+  },
+  insights: {
+    threshold: 85,
+    summary: '本区间最需要补的是「健壮性」（20 分，薄弱）。',
+    items: [{
+      key: 'robustness', label: '健壮性', hint: '边界、空值与异常处理',
+      score: 20, level: '薄弱', evidence_count: 4,
+      contributors: [{ knowledge_point: '空指针', error_type: '运行时错误', count: 3 }],
+      advice: '主要卡在「空指针」出现 3 次。建议先问参数会不会是空。',
+    }],
+  },
+  recurring: {
+    min_records: 2,
+    summary: '下表列出的是只在与某一类错误相关的错题里反复出现的语句。',
+    items: [{
+      line: 'for i in range(len(scores) - 1):', count: 3,
+      knowledge_point: '循环边界', group_records: 3,
+    }],
+  },
   suggestions: ['「循环边界」累计错 3 次。'],
 });
 await api.openReportPreview();
@@ -2024,10 +2067,15 @@ await api.openReportPreview();
 check('点「查看报告内容」会打开弹窗',
   !el.reportModal.classList.contains('hidden'));
 const previewHtml = el.reportModalBody.innerHTML;
-check('弹窗里有四个章节',
+check('弹窗里有六个章节',
   previewHtml.includes('一、能力雷达')
-  && previewHtml.includes('二、使用情况') && previewHtml.includes('三、错题整改情况')
-  && previewHtml.includes('四、学习建议'));
+  && previewHtml.includes('二、弱项细分与提升建议')
+  && previewHtml.includes('三、反复出错的语句')
+  && previewHtml.includes('四、使用情况') && previewHtml.includes('五、错题整改情况')
+  && previewHtml.includes('六、学习建议'));
+check('弹窗里有「怎么读这张图」的说明', previewHtml.includes('radar__note--guide'));
+check('弹窗里有弱项细分块', previewHtml.includes('insight__advice'));
+check('弹窗里有反复出错的语句表', previewHtml.includes('code-line'));
 check('弹窗里带上了学习建议原文', previewHtml.includes('累计错 3 次'));
 check('弹窗里有错题明细表', previewHtml.includes('report-view__table'));
 check('弹窗里列出了知识点', previewHtml.includes('循环边界'));
@@ -2038,22 +2086,6 @@ console.log('='.repeat(72));
 console.log('能力雷达图  六维评分 + SVG 绘制');
 console.log('='.repeat(72));
 
-const ABILITY = {
-  dimensions: [
-    { key: 'completeness', label: '完备性', hint: '分支覆盖', score: 80, weight: 3, evidence_count: 1, samples: [], delta: -4, delta_label: '-4' },
-    { key: 'conventions', label: '规范性', hint: '编码规范', score: 60, weight: 6, evidence_count: 2, samples: [], delta: 0, delta_label: '0' },
-    { key: 'readability', label: '可读性', hint: '命名注释', score: 100, weight: 0, evidence_count: 0, samples: [], delta: 0, delta_label: '0' },
-    { key: 'efficiency', label: '高效性', hint: '复杂度', score: 40, weight: 12, evidence_count: 3, samples: [], delta: 12, delta_label: '+12' },
-    { key: 'robustness', label: '健壮性', hint: '边界异常', score: 20, weight: 20, evidence_count: 4, samples: [], delta: 7, delta_label: '+7' },
-    { key: 'accuracy', label: '准确性', hint: '逻辑结果', score: 90, weight: 1, evidence_count: 1, samples: [], delta: 0, delta_label: '0' },
-  ],
-  evidence_total: 11, error_total: 11, check_total: 0, unclassified: 0,
-  weakest: 'robustness', strongest: 'readability', spread: 80,
-  summary: '依据 11 条记录得出，最弱的是健壮性。',
-  headline: '最弱：健壮性 20 分（依据 11 条记录）',
-  has_trend: true, previous_total: 9,
-  trend_note: '进步最大的是「高效性」（+12 分）；需要留意「完备性」（-4 分）。',
-};
 
 const nsBefore = nsCalls.length;
 api.renderAbilityRadar(ABILITY);

@@ -27,6 +27,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import utc_now
 from app.services.ability_service import AbilityService
+from app.services.report_insight import (
+    RECURRING_MIN_RECORDS,
+    WEAK_SCORE_THRESHOLD,
+    build_insights,
+    recurring_lines,
+    recurring_summary,
+    summarize_causes,
+)
 from app.services.tutor_service import UNKNOWN_KNOWLEDGE_POINT, TutorService
 from app.services.usage_service import UsageService, format_duration, parse_range
 
@@ -256,6 +264,23 @@ class ReportService:
             },
         }
         report["ability"] = ability
+        # 「逐维度诊断」与「反复出错的语句」：报告的正文主体。
+        # 全部是规则生成（见 report_insight.py），不调用大模型 ——
+        # 老师可能在没配 Key 的机器上导出，报告必须 100% 离线可生成。
+        insights = build_insights(ability)
+        report["insights"] = {
+            "items": insights,
+            "summary": summarize_causes(insights),
+            "threshold": WEAK_SCORE_THRESHOLD,
+        }
+        recurring = recurring_lines(ability.get("error_rows") or [])
+        report["recurring"] = {
+            "items": recurring,
+            "summary": recurring_summary(recurring, record_count=error_total),
+            "min_records": RECURRING_MIN_RECORDS,
+        }
+        # error_rows 是上面两处计算的原料，属于内部数据，不带进对外报告
+        ability.pop("error_rows", None)
         report["suggestions"] = _suggestions(
             total_seconds=total_seconds,
             session_count=session_count,

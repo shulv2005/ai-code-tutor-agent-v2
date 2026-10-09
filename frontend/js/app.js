@@ -2361,6 +2361,42 @@ function renderReportPreview(data) {
       <td class="is-num">${item.evidence_count}</td>
     </tr>`).join('');
 
+  // 弱项细分：每个偏弱的维度展开成一段（成因表 + 改进方向）。
+  // 与导出的 Word 同源 —— 页面上先看到什么，老师拿到的就是什么。
+  const insights = data.insights || { items: [] };
+  const insightBlocks = (insights.items || []).map((item) => {
+    const causeRows = (item.contributors || []).map((one) => `
+      <tr>
+        <td>${escapeHtml(one.knowledge_point)}</td>
+        <td>${escapeHtml(one.error_type)}</td>
+        <td class="is-num">${one.count}</td>
+      </tr>`).join('');
+    return `
+      <div class="insight">
+        <p class="insight__head">
+          ${escapeHtml(item.label)}
+          <span class="insight__score">${item.score} 分</span>
+          <span class="insight__level insight__level--${escapeHtml(item.level)}">${escapeHtml(item.level)}</span>
+        </p>
+        <p class="insight__hint">这一项在看什么：${escapeHtml(item.hint)}</p>
+        ${causeRows ? `
+          <table class="report-view__table">
+            <thead><tr><th>拖后腿的知识点</th><th>错误类型</th><th>次数</th></tr></thead>
+            <tbody>${causeRows}</tbody>
+          </table>` : ''}
+        <p class="insight__advice"><strong>改进方向：</strong>${escapeHtml(item.advice)}</p>
+      </div>`;
+  }).join('');
+
+  // 反复出错的语句
+  const recurring = data.recurring || { items: [] };
+  const recurringRows = (recurring.items || []).map((item) => `
+    <tr>
+      <td><code class="code-line">${escapeHtml(item.line)}</code></td>
+      <td class="is-num">${item.count} / ${item.group_records}</td>
+      <td>${escapeHtml(item.knowledge_point)}</td>
+    </tr>`).join('');
+
   el.reportModalBody.innerHTML = `
     <p class="report-view__section">基本信息</p>
     <dl class="report-view__kv">
@@ -2370,6 +2406,7 @@ function renderReportPreview(data) {
     </dl>
 
     <p class="report-view__section">一、能力雷达（六维）</p>
+    ${ability.guide ? `<p class="radar__note radar__note--guide">${escapeHtml(ability.guide)}</p>` : ''}
     <p class="radar__note">${escapeHtml(ability.summary || '')}</p>
     ${ability.trend_note ? `<p class="radar__note radar__note--trend">${escapeHtml(ability.trend_note)}</p>` : ''}
     <div class="radar radar--large" id="radarLargeBox"></div>
@@ -2379,14 +2416,26 @@ function renderReportPreview(data) {
         <tbody>${abilityRows}</tbody>
       </table>` : ''}
 
-    <p class="report-view__section">二、使用情况</p>
+    <p class="report-view__section">二、弱项细分与提升建议</p>
+    <p class="radar__note">${escapeHtml(insights.summary || '')}</p>
+    ${insightBlocks || '<p>本区间内六项都达到了标准，没有需要单独展开的短板。</p>'}
+
+    <p class="report-view__section">三、反复出错的语句</p>
+    <p class="radar__note">${escapeHtml(recurring.summary || '')}</p>
+    ${recurringRows ? `
+      <table class="report-view__table">
+        <thead><tr><th>代码语句</th><th>出现在几条错题</th><th>所属知识点</th></tr></thead>
+        <tbody>${recurringRows}</tbody>
+      </table>` : ''}
+
+    <p class="report-view__section">四、使用情况</p>
     <dl class="report-view__kv">
       <dt>累计有效时长</dt><dd>${escapeHtml(data.usage.total_text)}</dd>
       <dt>使用天数 / 次数</dt><dd>${data.usage.active_days} 天 / ${data.usage.session_count} 次</dd>
       <dt>平均每次</dt><dd>${escapeHtml(data.usage.average_text)}</dd>
     </dl>
 
-    <p class="report-view__section">三、错题整改情况</p>
+    <p class="report-view__section">五、错题整改情况</p>
     ${weakRows ? `
       <table class="report-view__table">
         <thead><tr><th>易错知识点</th><th>次数</th><th>占比</th></tr></thead>
@@ -2399,7 +2448,7 @@ function renderReportPreview(data) {
         <tbody>${errorRows}</tbody>
       </table>` : ''}
 
-    <p class="report-view__section">四、学习建议</p>
+    <p class="report-view__section">六、学习建议（总体）</p>
     <ol class="report-view__tip">${tips}</ol>
   `;
 

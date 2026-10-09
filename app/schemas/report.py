@@ -114,6 +114,14 @@ class ErrorReportSection(BaseModel):
     items: list[ErrorDetailItem] = Field(default_factory=list)
 
 
+class ContributorItem(BaseModel):
+    """把某个能力维度拖下去的具体问题（知识点 + 错误类型）。"""
+
+    knowledge_point: str
+    error_type: str
+    count: int
+
+
 class AbilityDimensionItem(BaseModel):
     """能力雷达图上的一个维度。"""
 
@@ -131,6 +139,10 @@ class AbilityDimensionItem(BaseModel):
         description="与上一个等长区间相比的分数变化；全部历史（range=all）时为 null",
     )
     delta_label: str = Field(default="", description="上面那个数带符号的写法，如 +12 / -8 / 0")
+    contributors: list[ContributorItem] = Field(
+        default_factory=list,
+        description="这个维度为什么低：按次数倒序的知识点 + 错误类型（最多 4 条）",
+    )
 
 
 class AbilityProfile(BaseModel):
@@ -150,11 +162,52 @@ class AbilityProfile(BaseModel):
     spread: int = Field(default=0, description="最高分与最低分之差")
     summary: str = Field(default="", description="配雷达图的一句完整结论（弹窗与 Word 用）")
     headline: str = Field(default="", description="只讲最弱那一项的短句（侧栏卡片用）")
+    guide: str = Field(
+        default="", description="「怎么读这张图」的说明文字，前后端与 Word 共用同一份"
+    )
     has_trend: bool = Field(
         default=False, description="是否有可对比的上一个周期（range=all 时为 false）"
     )
     previous_total: int = Field(default=0, description="上一个周期的证据条数")
     trend_note: str = Field(default="", description="进步最大 / 需要留意 的一句话")
+
+
+class InsightItem(BaseModel):
+    """一个偏弱维度的诊断：分数、等级、成因、提升建议。"""
+
+    key: str
+    label: str
+    hint: str
+    score: int
+    level: str = Field(description="优秀 / 良好 / 待加强 / 薄弱")
+    evidence_count: int
+    contributors: list[ContributorItem] = Field(default_factory=list)
+    advice: str = Field(description="总结性提升建议（规则生成，不含具体题目）")
+
+
+class InsightSection(BaseModel):
+    """弱项细分与提升建议。只收录低于阈值的维度，按分数升序。"""
+
+    items: list[InsightItem] = Field(default_factory=list)
+    summary: str = ""
+    threshold: int = Field(default=85, description="低于这个分数才会单独展开")
+
+
+class RecurringItem(BaseModel):
+    """一条"反复出错的语句"。"""
+
+    line: str
+    count: int = Field(description="在几条错题里出现过")
+    knowledge_point: str = Field(description="这些错题属于哪一类知识点")
+    group_records: int = Field(description="该类知识点一共几条错题")
+
+
+class RecurringSection(BaseModel):
+    """反复出错的语句。"""
+
+    items: list[RecurringItem] = Field(default_factory=list)
+    summary: str = ""
+    min_records: int = Field(default=2, description="至少在几条错题里出现才算反复")
 
 
 class LearningReportResponse(BaseModel):
@@ -170,20 +223,31 @@ class LearningReportResponse(BaseModel):
     ability: AbilityProfile = Field(
         default_factory=AbilityProfile, description="六维能力画像（雷达图）"
     )
+    insights: InsightSection = Field(
+        default_factory=InsightSection, description="弱项细分与提升建议（逐维度展开）"
+    )
+    recurring: RecurringSection = Field(
+        default_factory=RecurringSection, description="反复出错的语句"
+    )
     suggestions: list[str] = Field(default_factory=list, description="按固定规则生成的学习建议")
 
 
 __all__ = [
     "AbilityDimensionItem",
     "AbilityProfile",
+    "ContributorItem",
     "ErrorDetailItem",
     "ErrorReportSection",
     "ErrorTypeItem",
     "HeartbeatRequest",
     "HeartbeatResponse",
+    "InsightItem",
+    "InsightSection",
     "KnowledgePointItem",
     "LanguageItem",
     "LearningReportResponse",
+    "RecurringItem",
+    "RecurringSection",
     "UsageDailyItem",
     "UsageSessionItem",
     "UsageSummaryResponse",

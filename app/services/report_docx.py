@@ -76,9 +76,18 @@ def _run(
     size: str = SZ_BODY,
     bold: bool = False,
     color: str | None = None,
+    mono: bool = False,
 ) -> str:
-    """一个文本 run。中文字体走 `w:eastAsia`，西文走 `w:ascii`。"""
-    props = [f'<w:rFonts w:ascii="{EN_FONT}" w:hAnsi="{EN_FONT}" w:eastAsia="{CN_FONT}"/>']
+    """一个文本 run。中文字体走 `w:eastAsia`，西文走 `w:ascii`。
+
+    `mono=True` 换成等宽字体：报告里要贴学生的代码语句，
+    宋体排代码不光看起来奇怪，缩进也对不齐。
+    """
+    if mono:
+        fonts = '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:eastAsia="宋体"/>'
+    else:
+        fonts = f'<w:rFonts w:ascii="{EN_FONT}" w:hAnsi="{EN_FONT}" w:eastAsia="{CN_FONT}"/>'
+    props = [fonts]
     if bold:
         props.append("<w:b/><w:bCs/>")
     if color:
@@ -134,9 +143,15 @@ def _text_cell(
     bold: bool = False,
     align: str | None = None,
     size: str = SZ_TABLE,
+    mono: bool = False,
 ) -> str:
+    """一个单元格。
+
+    `mono=True` 时用等宽字体（Consolas）：报告里要贴代码语句，
+    用宋体排代码对不齐、也容易和正文混淆。
+    """
     body = _para(
-        _run(text, size=size, bold=bold),
+        _run(text, size=size, bold=bold, mono=mono),
         align=align,
         before=20,
         after=20,
@@ -274,7 +289,7 @@ def _section_basic(report: dict[str, Any]) -> str:
 
 def _section_usage(report: dict[str, Any]) -> str:
     usage = report["usage"]
-    parts = [_heading("二、使用情况", level=1)]
+    parts = [_heading("四、使用情况", level=1)]
 
     parts.append(
         _para(
@@ -384,6 +399,13 @@ def _section_ability(report: dict[str, Any]) -> str:
     dimensions = ability.get("dimensions") or []
 
     parts = [_heading("一、能力雷达（六维）", level=1)]
+
+    # 「怎么读这张图」。放在图**前面**：老师拿到报告第一眼看到的就是这张图，
+    # 得先知道六个角、红点、分数区间各代表什么，否则它就是一张好看的图。
+    guide = ability.get("guide")
+    if guide:
+        parts.append(_para(_run(guide, size=SZ_SMALL, color="595959"), after=160))
+
     parts.append(
         _para(
             _run(
@@ -475,9 +497,136 @@ def _section_ability(report: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _section_insights(report: dict[str, Any]) -> str:
+    """二、弱项细分与提升建议。
+
+    每一段回答三个问题：这一项多少分（什么水平）、**为什么低**（是哪几个
+    知识点拖下去的）、**接下来怎么改**（总结性话术，不是具体题目）。
+
+    只展开低于阈值的维度，按分数从低到高排 —— 报告要先讲最该补的那一项，
+    而不是按固定顺序罗列六项。
+    """
+    section = report.get("insights") or {}
+    items = section.get("items") or []
+
+    parts = [_heading("二、弱项细分与提升建议", level=1)]
+    parts.append(_para(_run(section.get("summary") or ""), after=160))
+
+    if not items:
+        parts.append(
+            _para(
+                _run(
+                    "本区间内六项能力都达到了设定标准，没有需要单独展开的短板。"
+                    "建议保持当前的练习节奏，并注意不要让某一类问题重新累积起来。",
+                    color="595959",
+                )
+            )
+        )
+        return "".join(parts)
+
+    numerals = "一二三四五六"
+    for index, item in enumerate(items):
+        parts.append(
+            _heading(
+                f"（{numerals[index]}）{item['label']}　{item['score']} 分 · {item['level']}",
+                level=2,
+            )
+        )
+        parts.append(
+            _para(
+                _run(f"这一项在看什么：{item['hint']}。", size=SZ_SMALL, color="595959"),
+                after=100,
+            )
+        )
+
+        contributors = item.get("contributors") or []
+        if contributors:
+            widths = [CONTENT_WIDTH - 2000 - 1400, 2000, 1400]
+            rows = [
+                _text_cell("拖后腿的知识点", width=widths[0], fill="D9E2F3", bold=True)
+                + _text_cell("错误类型", width=widths[1], fill="D9E2F3", bold=True, align="center")
+                + _text_cell("次数", width=widths[2], fill="D9E2F3", bold=True, align="center")
+            ]
+            for one in contributors:
+                rows.append(
+                    _text_cell(one["knowledge_point"], width=widths[0])
+                    + _text_cell(one["error_type"], width=widths[1], align="center")
+                    + _text_cell(str(one["count"]), width=widths[2], align="center")
+                )
+            parts.append(_table(rows, widths))
+        else:
+            parts.append(
+                _para(
+                    _run(
+                        "这一项的扣分来自代码检测记录，没有落到具体知识点上。",
+                        size=SZ_SMALL,
+                        color="7F7F7F",
+                    )
+                )
+            )
+
+        parts.append(
+            _para(
+                _run("改进方向：", size=SZ_BODY, bold=True)
+                + _run(item.get("advice") or "", size=SZ_BODY),
+                before=120,
+                after=200,
+            )
+        )
+
+    return "".join(parts)
+
+
+def _section_recurring(report: dict[str, Any]) -> str:
+    """三、反复出错的语句。
+
+    判据见 `app/services/report_insight.py`：只列**集中在某一类错误里**的语句
+    （在别类错题里不出现），而且每个知识点只留一句 ——
+    否则学生反复提交同一份作业时，列出来的会是整份源码。
+    """
+    section = report.get("recurring") or {}
+    items = section.get("items") or []
+
+    parts = [_heading("三、反复出错的语句", level=1)]
+    parts.append(_para(_run(section.get("summary") or ""), after=160))
+
+    if not items:
+        return "".join(parts)
+
+    widths = [CONTENT_WIDTH - 1700 - 2400, 1700, 2400]
+    rows = [
+        _text_cell("代码语句", width=widths[0], fill="D9E2F3", bold=True)
+        + _text_cell("出现在几条错题", width=widths[1], fill="D9E2F3", bold=True, align="center")
+        + _text_cell("所属知识点", width=widths[2], fill="D9E2F3", bold=True)
+    ]
+    for item in items:
+        rows.append(
+            # 代码用等宽字体，和正文区分开
+            _text_cell(item["line"], width=widths[0], mono=True)
+            + _text_cell(
+                f"{item['count']} / {item['group_records']}", width=widths[1], align="center"
+            )
+            + _text_cell(item["knowledge_point"], width=widths[2])
+        )
+    parts.append(_table(rows, widths))
+    parts.append(
+        _para(
+            _run(
+                "「出现在几条错题」的分母是该知识点在本区间的错题总数。"
+                "表里每一行都只在与该知识点相关的错题中反复出现，"
+                "因此比单纯按出现次数排序更能指到具体语句上。",
+                size=SZ_SMALL,
+                color="7F7F7F",
+            ),
+            before=80,
+        )
+    )
+    return "".join(parts)
+
+
 def _section_errors(report: dict[str, Any]) -> str:
     errors = report["errors"]
-    parts = [_heading("三、错题整改情况", level=1)]
+    parts = [_heading("五、错题整改情况", level=1)]
 
     parts.append(
         _para(
@@ -580,7 +729,7 @@ def _section_errors(report: dict[str, Any]) -> str:
 
 
 def _section_suggestions(report: dict[str, Any]) -> str:
-    parts = [_heading("四、学习建议", level=1)]
+    parts = [_heading("六、学习建议（总体）", level=1)]
     for index, tip in enumerate(report["suggestions"], start=1):
         parts.append(
             _para(_run(f"{index}. {tip}"), after=100)
@@ -795,6 +944,8 @@ def render_learning_report(report: dict[str, Any]) -> bytes:
             ),
             _section_basic(report),
             _section_ability(report),
+            _section_insights(report),
+            _section_recurring(report),
             _section_usage(report),
             _section_errors(report),
             _section_suggestions(report),

@@ -201,16 +201,34 @@ def prepare_database(db_path: Path, env: dict[str, str]) -> None:
                 ),
             )
 
-        # 错题：循环边界 3 条、数组下标 2 条、函数返回值 1 条
+        # 错题：循环边界 3 条、数组下标 2 条、函数返回值 1 条。
+        #
+        # 每条带**自己那份代码**，而不是全都塞同一段 —— 否则"反复出错的语句"
+        # 那条链路在这份数据上跑出来是空的（每一行都在所有错题里出现，
+        # 判别力判据对每行都一样），验收就白验了。真实场景里学生改一版交一版，
+        # 各知识点的代码本来就是不同的。
+        loop_code = (
+            "def total(scores):\n"
+            "    result = 0\n"
+            "    for i in range(len(scores) - 1):\n"
+            "        result += scores[i]\n"
+            "    return result\n"
+        )
+        index_code = (
+            "def first_name(items, i):\n"
+            "    result = items[i + 1].name\n"
+            "    return result\n"
+        )
+        return_code = "def add(a, b):\n    return a - b\n"
         errors = [
-            ("逻辑错误", "循环边界", '["循环边界"]', "range 少遍历了一个元素，求和结果少最后一项。"),
-            ("逻辑错误", "循环边界", '["循环边界", "累加"]', "外层循环的终止条件写成了 < 而不是 <=。"),
-            ("逻辑错误", "循环边界", '["循环边界"]', "空列表时直接取 [0] 会越界。"),
-            ("运行时错误", "数组下标", '["数组下标"]', "下标从 1 开始，但 Python 从 0 开始。"),
-            ("运行时错误", "数组下标", '["数组下标", "边界条件"]', "遍历时多访问了一位。"),
-            ("规范问题", "函数返回值", '["函数返回值"]', "函数名叫 add 却做了减法。"),
+            ("逻辑错误", "循环边界", '["循环边界"]', "range 少遍历了一个元素，求和结果少最后一项。", loop_code),
+            ("逻辑错误", "循环边界", '["循环边界", "累加"]', "外层循环的终止条件写成了 < 而不是 <=。", loop_code),
+            ("逻辑错误", "循环边界", '["循环边界"]', "空列表时直接取 [0] 会越界。", loop_code),
+            ("运行时错误", "数组下标", '["数组下标"]', "下标从 1 开始，但 Python 从 0 开始。", index_code),
+            ("运行时错误", "数组下标", '["数组下标", "边界条件"]', "遍历时多访问了一位。", index_code),
+            ("规范问题", "函数返回值", '["函数返回值"]', "函数名叫 add 却做了减法。", return_code),
         ]
-        for index, (error_type, point, points_json, feedback) in enumerate(errors):
+        for index, (error_type, point, points_json, feedback, code) in enumerate(errors):
             conn.execute(
                 "INSERT INTO student_error_logs"
                 " (student_id, code_snippet, language, filename, error_type,"
@@ -218,7 +236,7 @@ def prepare_database(db_path: Path, env: dict[str, str]) -> None:
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     STUDENT,
-                    "def add(a, b):\n    return a - b\n",
+                    code,
                     "python" if index % 2 == 0 else "c",
                     f"homework{index + 1}.py",
                     error_type,
@@ -542,9 +560,15 @@ def main() -> int:
             blob = "\n".join(texts)
             record("文档里有标题", "学习报告" in blob)
             record("文档里有能力雷达章节", "一、能力雷达（六维）" in blob)
-            record("文档里有使用情况章节", "二、使用情况" in blob)
-            record("文档里有错题整改章节", "三、错题整改情况" in blob)
-            record("文档里有学习建议章节", "四、学习建议" in blob)
+            record("文档里有弱项细分章节", "二、弱项细分与提升建议" in blob)
+            record("文档里有反复出错语句章节", "三、反复出错的语句" in blob)
+            record("文档里有使用情况章节", "四、使用情况" in blob)
+            record("文档里有错题整改章节", "五、错题整改情况" in blob)
+            record("文档里有学习建议章节", "六、学习建议（总体）" in blob)
+            # 「怎么读这张图」必须在图前面 —— 否则老师看不懂六个角和红点代表什么
+            record("报告解释了怎么读雷达图", "这张图把六项能力分别画在六根轴上" in blob)
+            record("有具体的改进方向", "改进方向" in blob)
+            record("解释了反复出错语句的判据", "分母是该知识点在本区间的错题总数" in blob)
             record("文档里有种进去的知识点", "循环边界" in blob and "数组下标" in blob)
             record("文档里有总时长 1 小时 27 分", "1 小时 27 分" in blob)
             record("文档里列出了每次使用明细", "每次使用明细" in blob)
@@ -556,7 +580,7 @@ def main() -> int:
             record("能力表说明了评估依据", "评估依据" in blob)
             record("最弱的那一项被标出来", "（最弱）" in blob)
             tables = list(root.iter(f"{W}tbl"))
-            record("至少 9 张表", len(tables) >= 9, f"{len(tables)} 张")
+            record("至少 11 张表", len(tables) >= 11, f"{len(tables)} 张")
 
         # ---------------- 5. Word 亲自打开 ----------------
         print()
@@ -594,9 +618,17 @@ def main() -> int:
             record("声明了 wp: 命名空间", "xmlns:wp=" in document)
             record("正文里有 w:drawing", "<w:drawing>" in document)
 
-        profile = api_json("/api/v1/report/summary?range=all")
+        # 必须带上被测学生！这一行原来漏了 student_id，默认落到本机身份 "local"，
+        # 而数据是种在 STUDENT 名下的 —— 于是下面每一条断言都在一个空画像上通过，
+        # 看起来全绿，其实什么都没验到（"反复出错的语句 0 行"这句 OK 就是这么来的）。
+        profile = api_json(f"/api/v1/report/summary?range=all&student_id={STUDENT}")
         ability = (profile or {}).get("ability") or {}
         dims = ability.get("dimensions") or []
+        record(
+            "接口确实读到了种子数据（防止断言在空数据上通过）",
+            ability.get("evidence_total", 0) > 0,
+            f"证据 {ability.get('evidence_total')} 条",
+        )
         record("接口返回六个能力维度", len(dims) == 6, f"{len(dims)} 个")
         record(
             "维度键与顺序固定",
@@ -640,6 +672,56 @@ def main() -> int:
         record(
             "能力表里带「较上一周期」一列",
             "较上一周期" in blob,
+        )
+
+        # ---- 弱项细分与提升建议 ----
+        insights = (profile or {}).get("insights") or {}
+        insight_items = insights.get("items") or []
+        record("接口返回了弱项细分", "items" in insights and "summary" in insights)
+        record(
+            "只收录低于阈值的维度",
+            all(item["score"] < insights.get("threshold", 0) for item in insight_items),
+            f"阈值 {insights.get('threshold')}，收录 {len(insight_items)} 项",
+        )
+        record(
+            "按分数升序（最该补的排最前）",
+            [item["score"] for item in insight_items]
+            == sorted(item["score"] for item in insight_items),
+        )
+        record(
+            "每一项都有等级与可执行的建议",
+            all(item.get("level") and len(item.get("advice", "")) > 30 for item in insight_items),
+        )
+        record(
+            "建议里点出了拖后腿的知识点（回答了为什么）",
+            all(
+                (not item.get("contributors"))
+                or any(c["knowledge_point"] in item["advice"] for c in item["contributors"])
+                for item in insight_items
+            ),
+        )
+
+        # ---- 反复出错的语句 ----
+        recurring = (profile or {}).get("recurring") or {}
+        rec_items = recurring.get("items") or []
+        record("接口返回了反复出错的语句", "items" in recurring and "summary" in recurring)
+        record(
+            "每个知识点最多一行（不许把整份源码列出来）",
+            bool(rec_items)
+            and len({item["knowledge_point"] for item in rec_items}) == len(rec_items),
+            f"{len(rec_items)} 行",
+        )
+        record(
+            "样板行（def/return）没有被当成出错语句",
+            all(
+                not item["line"].startswith("def ")
+                and item["line"] not in ("return", "}", "return result")
+                for item in rec_items
+            ),
+        )
+        record(
+            "每行都标了所属知识点与出现条数",
+            all(item.get("knowledge_point") and item.get("count", 0) >= 1 for item in rec_items),
         )
 
         page = http_get_text("/ui/index.html")
