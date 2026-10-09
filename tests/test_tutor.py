@@ -411,3 +411,103 @@ def test_openapi_exposes_tutor_routes(sqlite_path: Path, tutor_app: object) -> N
         assert path in paths
     # 历史记录功能已删除，这三条路由不该再出现
     assert "/api/v1/tutor/history" not in paths
+
+
+# ---------------------------------------------------------------------------
+# 代码体积上限：两条提交路径都必须拦，而且必须是中文提示
+# ---------------------------------------------------------------------------
+def test_pasted_code_over_limit_gets_a_chinese_413(
+    sqlite_path: Path, tutor_app: object
+) -> None:
+    """粘贴的代码超标时给中文 413，而不是 multipart 解析器的英文内部错误。
+
+    真实反馈就是这样来的：学生粘了一大段代码点「生成注释」，界面上显示
+    "生成失败：Part exceeded maximum size of 1024KB." ——
+    那是 Starlette 解析 multipart 普通字段时抛的，跟"代码太大"这件事
+    完全对不上，学生不知道该干什么。
+
+    业务上限本来是 512KB 且早有中文提示，但**只挡了上传文件那条路**，
+    粘贴这条路既绕过上限、又会在超过 1MB 时先撞上 Starlette。
+    """
+    from app.core.limits import MAX_CODE_BYTES
+
+    code = "x = 1\n" * ((MAX_CODE_BYTES + 4096) // 6)
+    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
+        response = client.post(
+            "/api/v1/tutor/comment",
+            files={"code": (None, code), "filename": (None, "big.py")},
+        )
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert "代码太大" in detail
+    assert "上限" in detail
+    # 关键：不能把第三方库的英文原文漏给学生
+    assert "exceeded maximum size" not in detail
+
+
+def test_pasted_code_just_under_limit_is_accepted(
+    sqlite_path: Path, tutor_app: object
+) -> None:
+    """正好在限内的代码不能被误拦（否则正常作业全用不了）。"""
+    from app.core.limits import MAX_CODE_BYTES
+
+    code = "x = 1\n" * ((MAX_CODE_BYTES - 4096) // 6)
+    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
+        response = client.post(
+            "/api/v1/tutor/comment",
+            files={"code": (None, code), "filename": (None, "ok.py")},
+        )
+    # 体积检查放行（后面因为假模型正常工作，返回 200）
+    assert response.status_code == 200, response.text
+
+
+def test_uploaded_file_over_limit_keeps_the_chinese_413(
+    sqlite_path: Path, tutor_app: object
+) -> None:
+    """上传文件那条路的中文提示不能被改坏（两条路现在共用同一句文案）。"""
+    from app.core.limits import MAX_CODE_BYTES
+
+    payload = b"x = 1\n" * ((MAX_CODE_BYTES + 4096) // 6)
+    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
+        response = client.post(
+            "/api/v1/tutor/comment",
+            files={"file": ("big.py", payload, "text/x-python")},
+        )
+    assert response.status_code == 413
+    assert "代码太大" in response.json()["detail"]
+
+
+def test_oversized_body_is_rejected_before_parsing(
+    sqlite_path: Path, tutor_app: object
+) -> None:
+    """超过请求体上限的提交，要在 Starlette 解析之前就被挡掉。
+
+    这条防的是"漏网"：只要请求体大到会被 multipart 解析器拒绝，
+    学生就会看到那句英文。所以解析前必须按 Content-Length 先拦一道。
+    """
+    from app.core.limits import MAX_AI_BODY_BYTES
+
+    with TestClient(tutor_app) as client:  # type: ignore[arg-type]
+        response = client.post(
+            "/api/v1/tutor/comment",
+            files={
+                "code": (None, "x" * (MAX_AI_BODY_BYTES + 1024)),
+                "filename": (None, "huge.py"),
+            },
+        )
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert "代码太大" in detail
+    assert "exceeded maximum size" not in detail
+
+
+def test_limits_are_shared_between_main_and_endpoints() -> None:
+    """上限常量只有一个来源，两处引用同一份，不会各写一个数字。"""
+    from app.core import limits
+    from app.main import create_app  # noqa: F401  （导入即验证没有循环依赖）
+
+    assert limits.MAX_AI_BODY_BYTES > limits.MAX_CODE_BYTES
+    assert limits.AI_FORM_PATH_PREFIX.startswith("/api/")
+    # 提示文案里必须带上"怎么办"，而不只是报一个数字
+    message = limits.too_large_detail(2 * 1024 * 1024)
+    assert "2" in message and "上限" in message and "粘" in message

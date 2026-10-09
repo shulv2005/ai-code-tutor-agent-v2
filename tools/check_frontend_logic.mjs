@@ -459,6 +459,9 @@ const context = vm.createContext({
   navigator: navigatorStub,
   FormData: FormDataStub,
   URLSearchParams,
+  // app.js 用 TextEncoder 按 UTF-8 字节数算代码体积（中文一个字 3 字节）。
+  // Node 里本来就有，但 vm 的沙箱只暴露这里列出的东西，不列就报 undefined。
+  TextEncoder,
   console,
   setTimeout: windowStub.setTimeout,
   clearTimeout: () => {},

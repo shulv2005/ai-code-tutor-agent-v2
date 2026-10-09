@@ -348,6 +348,33 @@ async function api(path, options = {}, base = API_BASE) {
 }
 
 /**
+ * 单次提交的代码体积上限。
+ *
+ * 必须与后端 `app/core/limits.py` 的 `MAX_CODE_BYTES` 保持一致：
+ * 前端先拦是为了**少一次往返**、并且能立刻给出中文提示；
+ * 后端那份才是真正的约束（接口可以直接被调用，不能只靠前端）。
+ *
+ * 为什么这个上限存在：一是学生作业不会这么大，超过基本是误传了文件；
+ * 二是再大也超出模型的上下文，交给模型也只会失败在更靠后的地方。
+ */
+const MAX_CODE_BYTES = 512 * 1024;
+
+/** 按 UTF-8 字节数算（中文一个字 3 字节），与后端口径一致 */
+function codeByteLength(text) {
+  return new TextEncoder().encode(String(text || '')).length;
+}
+
+/** 超过上限就抛错，提示里说清"该怎么办"，而不是只报一个数字 */
+function assertCodeSize(text) {
+  const size = codeByteLength(text);
+  if (size <= MAX_CODE_BYTES) return;
+  throw new Error(
+    `代码太大（${Math.round(size / 1024)} KB），单次上限 ${MAX_CODE_BYTES / 1024} KB。`
+    + '请只把出问题的那一段代码粘进来，或在本地把文件改小后重试。',
+  );
+}
+
+/**
  * 把「代码文本 + 文件名」组装成 FormData，
  * 后端三个 AI 接口和 analyze 都支持这种提交方式。
  *
@@ -355,6 +382,10 @@ async function api(path, options = {}, base = API_BASE) {
  * 而 Key 走 `X-Session-Id` 请求头（见 api()），不在这里重复传。
  */
 function codeFormData() {
+  // 兜底再查一次体积：万一有别的入口把超大代码塞进了 state.code，
+  // 也不能让它发出去 —— 后端 multipart 解析器会抛出英文内部错误，
+  // 学生看到的就是 "Part exceeded maximum size of 1024KB."（真实反馈）。
+  assertCodeSize(state.code);
   const form = new FormData();
   form.append('code', state.code);
   form.append('filename', state.filename);
@@ -1449,6 +1480,11 @@ async function analyzeCurrent() {
 async function loadCode(filename, code, options = {}) {
   // 换文件前先确认：当前若有没保存的修改，不能默默丢掉
   if (!(await confirmDiscardChanges())) return;
+
+  // 体积检查放在这个「代码进入系统的唯一入口」上，而不是散在各个调用点。
+  // 这里不拦的话，学生会先看到代码正常显示，点「生成注释」时才失败 ——
+  // 而且失败的还是后端 multipart 解析器抛出的一句英文内部错误。
+  assertCodeSize(code);
 
   state.filename = filename;
   state.code = code;
@@ -3627,6 +3663,16 @@ function bindCodeDropzone() {
 /** 把文件内容读成文本并交给 loadCode 处理（只预览，不写服务器） */
 async function uploadFile(file) {
   try {
+    // 先在本地按字节数拦一道：大文件读进来再失败，学生白等一场，
+    // 而且报错还是后端解析器抛出的英文（见 MAX_CODE_BYTES 的说明）。
+    if (file.size > MAX_CODE_BYTES) {
+      toast(
+        `文件太大（${Math.round(file.size / 1024)} KB），单次上限 ${MAX_CODE_BYTES / 1024} KB。`
+        + '请只把出问题的那一段代码存成文件，或改小后重试。',
+        'error',
+      );
+      return;
+    }
     const text = await file.text();
     if (!text.trim()) {
       toast('这个文件是空的', 'error');

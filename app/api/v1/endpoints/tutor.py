@@ -47,7 +47,7 @@ from fastapi import (
 
 from app.agents.tutor_agent import TutorAgent, format_error_history
 from app.api.deps import ApiKeyManagerDep, AppSettingsDep, DbSession, TutorAgentDep
-from app.core import identity
+from app.core import identity, limits
 from app.core.api_key_manager import SESSION_HEADER, ApiKeyManager
 from app.core.config import Settings
 from app.core.llm_client import (
@@ -90,8 +90,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 单次上传的代码大小上限：学生作业不会很大，超过基本是误传了文件
-MAX_CODE_BYTES = 512 * 1024
+# 单次提交的代码大小上限。常量与提示文案放在 app/core/limits.py ——
+# app/main.py 也要用它做"解析前先挡一道"，而 main 不许 import 端点模块。
+# 这里转出一次，保证 `from ...endpoints.tutor import MAX_CODE_BYTES` 的老写法继续可用。
+MAX_CODE_BYTES = limits.MAX_CODE_BYTES
+_too_large_detail = limits.too_large_detail
 
 # 学生身份相关的常量与解析函数都放在 app/core/identity.py ——
 # report / usage / app.main 都要用，放在端点模块里会让它们互相 import。
@@ -175,13 +178,21 @@ def _analyze(filename: str, code: str) -> AnalyzeResponse:
 async def _read_code(
     session_file: UploadFile | None, code: str | None, filename: str | None
 ) -> tuple[str, str]:
-    """从「上传文件」或「表单里的代码文本」中取出代码与文件名。"""
+    """从「上传文件」或「表单里的代码文本」中取出代码与文件名。
+
+    两条路径**都要做体积检查**。原来只挡了上传文件那条：
+    粘贴进来的代码既绕过 512KB 的业务上限，超过 1MB 时还会先被 Starlette
+    的 multipart 解析器拦下，返回一句英文内部错误
+    "Part exceeded maximum size of 1024KB." —— 学生完全不知道该怎么办。
+    （Starlette 只对**非文件字段**设这个上限，所以把代码放进 code 字段
+    迟早会撞上；代码更该走文件那条路，但两条路都得拦。）
+    """
     if session_file is not None and session_file.filename:
         raw = await session_file.read()
         if len(raw) > MAX_CODE_BYTES:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"文件过大（{len(raw) // 1024} KB），上限为 {MAX_CODE_BYTES // 1024} KB",
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=_too_large_detail(len(raw)),
             )
         if not raw.strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传的文件是空的")
@@ -196,6 +207,13 @@ async def _read_code(
         )
 
     if code and code.strip():
+        # 按 UTF-8 字节数算，与文件那条路径口径一致（中文一个字 3 字节）
+        size = len(code.encode("utf-8"))
+        if size > MAX_CODE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=_too_large_detail(size),
+            )
         return code, (filename or "untitled.py")
 
     raise HTTPException(

@@ -66,6 +66,11 @@ from app.api.compat import router as compat_router
 from app.api.v1.router import api_router
 from app.core.config import PROJECT_ROOT, Settings, get_settings
 from app.core.database import dispose_engine, init_db
+from app.core.limits import (
+    AI_FORM_PATH_PREFIX,
+    MAX_AI_BODY_BYTES,
+    too_large_detail,
+)
 from app.core.llm_client import close_llm_clients
 from app.core.logging import configure_logging
 from app.core.trace import TraceIdMiddleware, current_trace_id
@@ -257,6 +262,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #      也因为它不在 /api/v1 前缀下，log_route_inventory 不会统计到它，
     #      启动横幅里少一条属正常现象。
     app.include_router(compat_router, prefix="/api")
+
+    # 3.6) AI 接口的请求体上限：**在解析之前**就挡掉超大请求。
+    #
+    # 为什么需要它：前端把代码放在 multipart 的普通字段里提交，而 Starlette
+    # 对**非文件字段**有 1MB 的硬上限，超过时它抛出的 MultiPartException 会被
+    # 直接转成 `HTTPException(400, detail="Part exceeded maximum size of 1024KB.")` ——
+    # 一句英文内部错误原封不动显示给学生（截图就是这样来的），
+    # 而业务上的上限本来是 512KB、本来有中文提示。
+    #
+    # 这里按 Content-Length 提前拦一道，口径与 MAX_CODE_BYTES 对齐
+    # （留一点 multipart 封装余量），学生看到的就始终是中文提示。
+    @app.middleware("http")
+    async def limit_ai_body(request: Request, call_next: Any) -> Response:
+        if request.url.path.startswith(AI_FORM_PATH_PREFIX):
+            length = request.headers.get("content-length", "")
+            if length.isdigit() and int(length) > MAX_AI_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": too_large_detail(int(length))},
+                )
+        return await call_next(request)
 
     # 4) 前端静态页面：把 frontend/ 挂到 /ui，并把根路径重定向过去。
     #    这样同学双击 start.bat 后打开 http://127.0.0.1:8000 就能直接看到界面。
