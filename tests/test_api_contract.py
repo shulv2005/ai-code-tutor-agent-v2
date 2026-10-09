@@ -24,15 +24,9 @@ EXPECTED_ROUTES = {
     "/api/v1/tutor/fix": {"post"},
     "/api/v1/tutor/status": {"get"},
     # 本地项目库（按语言自动分类学生本地代码）
-    "/api/v1/library/scan": {"get"},
     # file 一条路径三个方法：读 / 在线编辑保存（替换共用）/ 删除（默认进回收站）
-    "/api/v1/library/file": {"get", "put", "delete"},
-    "/api/v1/library/status": {"get"},
     # 本地代码文件自动分类（扫描并归档到 c/ java/ python/）
-    "/api/v1/files/scan": {"post"},
-    "/api/v1/files/list": {"get"},
     # 前端拖拽入库：把文件存进项目库，再交给 /files/scan 归档
-    "/api/v1/files/upload": {"post"},
     # AI 自动检测（本地静态检查 + AI 深度检测）
     "/api/v1/check/code": {"post"},
     # 代码改错（本地分析 → AI 修正 → 本地复检）
@@ -124,8 +118,6 @@ def test_tags_are_from_known_set(spec: dict) -> None:
         "agent",
         "sandbox",
         "tutor",
-        "library",
-        "files",
         "check",
         "fix",
         "comment",
@@ -175,22 +167,6 @@ def test_no_untagged_operations(spec: dict) -> None:
         ("CodeChange", "reason"),
         ("TutorStatusResponse", "ai_available"),
         ("TutorStatusResponse", "supported_languages"),
-        # 文件自动分类：前端与验收脚本都直接读这些字段
-        ("FileScanResponse", "counts"),
-        ("FileScanResponse", "moved"),
-        ("FileScanResponse", "files"),
-        ("FileScanResponse", "inserted"),
-        ("ClassifiedFileResult", "target_path"),
-        ("ClassifiedFileResult", "action"),
-        ("FileListResponse", "by_language"),
-        ("FileListResponse", "items"),
-        ("ClassifiedFileRead", "created_at"),
-        ("ClassifiedFileRead", "exists"),
-        # 拖拽入库的返回字段（前端据它提示"已存在/已改名"）
-        ("FileUploadResponse", "rel_path"),
-        ("FileUploadResponse", "renamed"),
-        ("FileUploadResponse", "language_label"),
-        ("FileUploadResponse", "note"),
         # AI 自动检测：需求里点名的四类输出 + 评分
         ("CodeCheckResponse", "score"),
         ("CodeCheckResponse", "level"),
@@ -308,8 +284,6 @@ def test_route_inventory_summary(spec: dict) -> None:
         "tutor",
         "usage",
         "report",
-        "library",
-        "files",
         "check",
         "fix",
         "comment",

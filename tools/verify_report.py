@@ -338,8 +338,6 @@ def main() -> int:
         "PATH": os.environ.get("PATH", ""),
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
         "DATABASE__SQLITE_PATH": str(db_path),
-        "CLASSIFIER__ROOT": str(work / "codes"),
-        "LIBRARY__ROOTS": str(work / "library"),
         "APP__LOG_LEVEL": "WARNING",
         "LLM__API_KEY": "",
         "PYTHONIOENCODING": "utf-8",

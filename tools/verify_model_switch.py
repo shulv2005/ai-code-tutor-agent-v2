@@ -95,8 +95,6 @@ def main() -> int:
         "RETRIEVAL__INDEX_DIR": str(work / "index"),
         "REPOSITORY__WORKSPACE_DIR": str(work / "repos"),
         "DOCKER__WORKSPACE_DIR": str(work / "ws"),
-        "LIBRARY__ROOTS": str(work / "library"),
-        "CLASSIFIER__ROOT": str(work / "library"),
         "APP__LOG_LEVEL": "WARNING",
     }
     print("=" * 72)

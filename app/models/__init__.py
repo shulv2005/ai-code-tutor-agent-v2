@@ -25,11 +25,9 @@ from app.models.code_check import CodeCheckRecord
 from app.models.code_fix import CodeFixRecord
 from app.models.comment import CommentRecord
 from app.models.error_log import StudentErrorLog
-from app.models.file_record import ClassifiedFileRecord
 from app.models.usage import UsageSession
 
 __all__ = [
-    "ClassifiedFileRecord",
     "CodeCheckRecord",
     "CodeFixRecord",
     "CommentRecord",

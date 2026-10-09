@@ -171,20 +171,20 @@ function register(id, rect) {
 // app.js 在模块顶层就用 getElementById 取了一大批节点，必须先建好
 [
   'dropzone', 'fileInput', 'pasteName', 'pasteCode', 'pasteBtn',
-  'classifyCard', 'classifyList', 'structureBox', 'structureList',
-  'libraryHint', 'libraryChips', 'libraryList', 'libraryMore', 'refreshLibrary',
-  'libraryDropzone', 'libraryPathValue', 'copyLibraryPath', 'libraryReadOnlyHint',
+  
+  
+  
   // 模型设置（选模型 + 填自己的 API Key）
   'modelCard', 'modelSelect', 'modelApiKey', 'toggleKeyVisible', 'modelHint',
   'modelStatus', 'modelStatusText', 'saveModelKey', 'clearModelKey', 'refreshModels',
   'aiBadge', 'langBadge', 'resetLayout', 'topbarUsage', 'topbarExport',
-  'codeTitle', 'codeLangBadge', 'code-placeholder', 'codeDropzone', 'codeBlock',
+  'codeTitle', 'codeLangBadge', 'codeStat', 'code-placeholder', 'codeDropzone', 'codeBlock',
   'codeContent', 'clearCodeBtn',
   // 在线编辑
   'codeEditBtn', 'codeSaveBtn', 'codeCancelBtn', 'codeDirtyBadge',
   'editorWrap', 'editorGutter', 'codeEditor',
   // 替换 / 删除
-  'replaceInput', 'confirmModal', 'confirmTitle', 'confirmText',
+  'confirmModal', 'confirmTitle', 'confirmText',
   'confirmOkBtn', 'confirmCancelBtn',
   'resizerLeft', 'resizerRight', 'resizerCode', 'codeCard', 'codeActions',
   // 右侧面板上下分栏（分析结果 / 错题本）
@@ -482,13 +482,10 @@ const epilogue = `
   setHasCode, clearCode, loadCode, renderCode, renderLargeCode,
   clampPanelWidth, clampCodeHeight, safeSplitPoint,
   applyPanelWidth, applyCodeHeight, bindResizers, bindActions,
-  bindDropzone, bindLibraryDropzone, bindCodeDropzone, bindPasteToCodePane,
-  renderLibraryPath, copyLibraryPath,
-  renderLibraryFiles, findLibraryFile, onLibraryListClick,
-  startEdit, cancelEdit, saveEdit, setDirty, onEditorInput, onEditorKeydown,
+  bindCodeDropzone, bindPasteToCodePane,
+      startEdit, cancelEdit, saveEdit, setDirty, onEditorInput, onEditorKeydown,
   insertAtEditorCursor, syncEditorGutter, applyCodeVisibility, refreshEditButtons,
-  showConfirm, closeConfirm, requestReplace, performReplace, requestDelete,
-  bindEditor, bindFileActions,
+  showConfirm, closeConfirm,   bindEditor, bindFileActions,
   loadModels, renderModelOptions, updateModelHint, currentModel, setModelStatus,
   aiReady, renderAiBadge, loadStatus, setBusy, handleAiError, syncBadgeAfterAiError,
   saveAndTestModel, clearModelKey, bindModelSettings,
@@ -509,7 +506,7 @@ const epilogue = `
   report: { HEARTBEAT_INTERVAL_MS, LIVE_TICK_MS, LIVE_DRIFT_CAP_SECONDS, REPORT_BASE, USAGE_BASE },
   reportState,
   formatClock, renderReportLive, sendHeartbeat, startUsageHeartbeat,
-  currentReportRange, syncReportLinks, loadReport,
+  currentReportRange, syncReportLinks, loadReport, refreshAfterAiAction,
   renderReportPreview, openReportPreview, closeReportPreview, bindReportCard,
   // 能力雷达图（六维，手写 SVG）
   radar: { RADAR_VIEW },
@@ -797,384 +794,72 @@ check('块注释没闭合时会往后找到闭合处再切',
   safeEnd > 5, `期望位置 5，实际切在 ${safeEnd}`);
 
 /* ---------------------------------------------------------------------------
-   7. 项目库文件夹路径（常显 + 一键复制）
+   8. 代码在线编辑（只改预览，不写任何文件）
+
+   需求确认后的学生端不再维护服务端的作业文件库，因此保存只更新预览。
+   这一段盯的就是"别偷偷写盘"以及"提示语要说清楚没写文件"。
    ------------------------------------------------------------------------- */
 console.log();
-console.log('【7】项目库文件夹路径');
+console.log('【8】代码在线编辑（不写文件）');
 
-// ---- 只有一个根目录：直接把完整路径显示出来 ----
-api.renderLibraryPath([{ name: 'library', path: 'D:\\demo\\data\\library', exists: true }]);
-check('单个项目库目录 → 显示完整绝对路径',
-  el.libraryPathValue.textContent === 'D:\\demo\\data\\library',
-  el.libraryPathValue.textContent);
-check('目录存在时不加 is-missing 标记',
-  !el.libraryPathValue.classList.contains('is-missing'));
+// 确认弹窗的按钮要绑上：后面的「删除错题」也等这个弹窗。
+// （原来是【9】替换/删除那一节顺手绑的，那一节删掉后必须在这里绑。）
+api.bindFileActions();
 
-// ---- 两个根目录：显示第一个 + "等 N 个"，完整清单进 title ----
-api.renderLibraryPath([
-  { name: 'library', path: 'D:\\demo\\data\\library', exists: true },
-  { name: 'examples', path: 'D:\\demo\\examples', exists: true },
-]);
-check('多个项目库目录 → 显示第一个并注明还有 N 个',
-  el.libraryPathValue.textContent === 'D:\\demo\\data\\library 等 2 个文件夹',
-  el.libraryPathValue.textContent);
-check('完整路径清单写进 title（鼠标悬停可见）',
-  el.libraryPathValue.title.includes('D:\\demo\\examples'),
-  el.libraryPathValue.title);
-
-// ---- 目录不存在：用醒目样式标出来，别让学生以为代码被吞了 ----
-api.renderLibraryPath([{ name: 'library', path: 'D:\\demo\\data\\library', exists: false }]);
-check('目录不存在 → 加上 is-missing 标记（界面会变黄提示）',
-  el.libraryPathValue.classList.contains('is-missing'));
-
-// ---- 一键复制：把当前路径写进剪贴板 ----
-clipboardWrites.length = 0;
-api.renderLibraryPath([{ name: 'library', path: 'D:\\demo\\data\\library', exists: true }]);
-await api.copyLibraryPath();
-check('点「复制」→ 剪贴板拿到完整路径',
-  clipboardWrites.length === 1 && clipboardWrites[0] === 'D:\\demo\\data\\library',
-  JSON.stringify(clipboardWrites));
-
-// ---- 还没扫到路径时点复制：只提示，不写空内容 ----
-clipboardWrites.length = 0;
-api.renderLibraryPath([]);
-check('后端没配目录 → 显示提示文字而不是空着',
-  el.libraryPathValue.textContent.includes('还没有配置'),
-  el.libraryPathValue.textContent);
-await api.copyLibraryPath();
-check('没有路径时点「复制」不会写入空内容',
-  clipboardWrites.length === 0);
-
-/* ---------------------------------------------------------------------------
-   8. 在线编辑 / 保存
-   ------------------------------------------------------------------------- */
-console.log();
-console.log('【8】代码在线编辑');
-
-/** 造一个"已经打开了项目库文件"的状态，省掉网络往返 */
-function primeLibraryFile(overrides = {}) {
-  api.state.filename = 'homework/main.py';
-  api.state.code = 'def add(a, b):\n    return a + b\n';
-  api.state.savedCode = api.state.code;
-  api.state.language = 'python';
-  api.state.languageLabel = 'Python';
-  api.state.allowWrite = true;
-  api.state.trashDirName = '.trash';
-  api.state.libraryTarget = {
-    relPath: 'homework/main.py', root: 'library', sha256: 'sha-old',
-    encoding: 'utf-8', ...overrides,
-  };
-  api.setHasCode(true);
-}
-
-primeLibraryFile();
-check('有代码时「编辑」按钮可用', el.codeEditBtn.disabled === false);
+api.state.code = 'print(1)\n';
+api.state.filename = 'demo.py';
+api.state.hasCode = true;
 
 // ---- 进入编辑模式：编辑器出现，只读代码块让位 ----
 api.startEdit();
-check('点「编辑」→ 编辑器出现', !el.editorWrap.classList.contains('hidden'));
-check('编辑时只读代码块隐藏（两者不能同时显示）',
-  el.codeBlock.classList.contains('hidden'));
-check('编辑时占位提示保持隐藏', el.codePlaceholder.classList.contains('hidden'));
-check('编辑器内容 = 当前代码',
-  el.codeEditor.value === 'def add(a, b):\n    return a + b\n');
-check('编辑时「保存 / 取消」出现、「编辑」隐藏',
-  !el.codeSaveBtn.hidden && !el.codeCancelBtn.hidden && el.codeEditBtn.hidden);
-check('刚进编辑模式不算"有改动"（未保存标记不显示）',
-  el.codeDirtyBadge.classList.contains('hidden'));
-check('行号槽按行数生成（AI 说的"第 N 行"能对上）',
-  el.editorGutter.dataset.lines === '3' && el.editorGutter.textContent.startsWith('1\n2\n3'));
+check('点「编辑」后进入编辑态', api.state.editing === true);
+check('编辑器里填上了当前代码', el.codeEditor.value === 'print(1)\n');
+check('编辑器显示、只读代码块让位',
+  el.codeDropzone.classList.contains('is-editing'));
 
 // ---- 改一行：state 实时更新 + 未保存标记出现 ----
-el.codeEditor.value = 'def add(a, b):\n    return a - b\n';
-api.onEditorInput();
-check('编辑后 state.code 实时跟着走（AI 按钮分析的是你正在写的这版）',
-  api.state.code === 'def add(a, b):\n    return a - b\n');
-check('编辑后出现「未保存」标记', !el.codeDirtyBadge.classList.contains('hidden'));
-
-// ---- Tab 缩进 / 回车自动缩进 ----
-el.codeEditor.selectionStart = el.codeEditor.value.length;
-el.codeEditor.selectionEnd = el.codeEditor.value.length;
-let tabPrevented = false;
-api.onEditorKeydown({ key: 'Tab', preventDefault: () => { tabPrevented = true; } });
-check('Tab 插入 4 个空格并阻止焦点跳走',
-  tabPrevented && el.codeEditor.value.endsWith('    '), JSON.stringify(el.codeEditor.value.slice(-6)));
-
-el.codeEditor.value = 'def f():\n    x = 1';
-el.codeEditor.selectionStart = el.codeEditor.value.length;
-el.codeEditor.selectionEnd = el.codeEditor.value.length;
-api.onEditorKeydown({ key: 'Enter', preventDefault: () => {} });
-check('回车自动补上当前行缩进',
-  el.codeEditor.value.endsWith('\n    '), JSON.stringify(el.codeEditor.value.slice(-6)));
-
-// ---- Ctrl+S 保存：必须真的 PUT，并带上乐观锁指纹 ----
-el.codeEditor.value = 'def add(a, b):\n    return a - b\n';
-api.onEditorInput();
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-queueResponse({
-  rel_path: 'homework/main.py', sha256: 'sha-new', size_bytes: 30,
-  line_count: 2, char_count: 29, message: '已保存 homework/main.py', newline: '\n',
-});                                              // PUT /library/file
-queueResponse({ files: [], roots: [], languages: {}, total_files: 0, total_lines: 0,
-  language_counts: {}, language_labels: {}, allow_write: true,
-  trash_dir_name: '.trash' });                   // GET /library/scan（保存后刷新列表）
-queueResponse({ filename: 'homework/main.py', language: 'python', language_label: 'Python',
-  line_count: 2, char_count: 29, symbols: [] }); // POST /tutor/analyze
-let savePrevented = false;
-api.onEditorKeydown({
-  key: 's', ctrlKey: true, preventDefault: () => { savePrevented = true; },
-});
-await new Promise((resolve) => setImmediate(resolve));
-await new Promise((resolve) => setImmediate(resolve));
-await new Promise((resolve) => setImmediate(resolve));
-await new Promise((resolve) => setImmediate(resolve));
-
-const putCall = findCall('PUT', '/api/v1/library/file');
-check('Ctrl+S 拦掉了浏览器的"保存网页"', savePrevented);
-check('保存发出的是 PUT /api/v1/library/file', Boolean(putCall));
-if (putCall) {
-  const body = JSON.parse(putCall.options.body);
-  check('请求体里带上了要写入的文件路径', body.path === 'homework/main.py', body.path);
-  check('请求体里带上了乐观锁指纹（防止盖掉别处的改动）',
-    body.expected_sha256 === 'sha-old', String(body.expected_sha256));
-  check('请求体里是编辑器里的新内容',
-    body.code === 'def add(a, b):\n    return a - b\n');
-}
-check('保存成功后退出编辑模式',
-  el.editorWrap.classList.contains('hidden') && el.codeBlock.classList.contains('hidden') === false);
-check('保存成功后「未保存」标记消失',
-  el.codeDirtyBadge.classList.contains('hidden'));
-check('保存后用后端返回的新指纹更新基准',
-  api.state.libraryTarget.sha256 === 'sha-new', String(api.state.libraryTarget.sha256));
-check('保存后刷新了项目库列表',
-  Boolean(findCall('GET', '/api/v1/library/scan')));
-
-// ---- 保存失败（409 乐观锁冲突）：必须留在编辑模式，别把内容弄丢 ----
-primeLibraryFile();
-api.startEdit();
-el.codeEditor.value = 'def add(a, b):\n    return a * b\n';
-api.onEditorInput();
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-queueResponse({ detail: '这个文件在别处被改动过（内容和打开时不一样）' }, { status: 409 });
-await api.saveEdit();
-check('保存遇到 409 仍停留在编辑模式（内容不会丢）', api.state.editing === true);
-check('409 的提示原样透出给学生',
-  el.toast.textContent.includes('别处被改动过'), el.toast.textContent);
-check('409 后没有误报"已保存"', el.codeDirtyBadge.classList.contains('hidden') === false);
-
-// ---- 取消编辑：先确认，确认后才还原 ----
-let cancelPromise = api.cancelEdit();
-await new Promise((resolve) => setImmediate(resolve));
-check('放弃修改前先弹确认框（防手滑）',
-  !el.confirmModal.classList.contains('hidden'));
-check('确认框里写明"找不回来"',
-  el.confirmText.textContent.includes('找不回来') || el.confirmText.textContent.includes('放弃'),
-  el.confirmText.textContent);
-api.closeConfirm(false);          // 点「取消」
-await cancelPromise;
-check('点「取消」→ 保持在编辑模式，修改还在',
-  api.state.editing === true && el.codeEditor.value.includes('*'));
-
-cancelPromise = api.cancelEdit();
-await new Promise((resolve) => setImmediate(resolve));
-api.closeConfirm(true);           // 点「放弃修改」
-await cancelPromise;
-check('点「放弃修改」→ 退出编辑并还原成载入时的内容',
-  api.state.editing === false && api.state.code === 'def add(a, b):\n    return a + b\n');
-
-// ---- 非项目库的代码：保存只更新预览，并且要如实说明没写盘 ----
-api.state.libraryTarget = null;
-api.state.code = 'print(1)\n';
-api.state.savedCode = api.state.code;
-api.startEdit();
 el.codeEditor.value = 'print(2)\n';
 api.onEditorInput();
+check('改内容后 state.code 跟着变', api.state.code === 'print(2)\n',
+  api.state.code);
+check('出现「未保存」标记', api.state.dirty === true);
+check('未保存标记可见',
+  !el.codeDirtyBadge.classList.contains('hidden'));
+
+// ---- 保存：只更新预览，**不发任何写盘请求** ----
 fetchCalls.length = 0;
 fetchQueue.length = 0;
-queueResponse({ filename: 'pasted.py', language: 'python', language_label: 'Python',
-  line_count: 1, char_count: 9, symbols: [] });   // analyze
+queueResponse({ filename: 'demo.py', language: 'python', language_label: 'Python',
+  line_count: 1, char_count: 8, symbols: [] });
 await api.saveEdit();
-check('不在项目库里的代码：保存不发 PUT（没有文件可写）',
-  findCall('PUT', '/api/v1/library/file') === null);
-check('不在项目库里的代码：提示里说清"没有写进任何文件"',
+check('保存后退出编辑态', api.state.editing === false);
+check('保存后不再有未保存标记', api.state.dirty === false);
+// 保存只允许重新跑一次本地分析（POST /tutor/analyze，只读），
+// 不能出现任何真正写文件的调用。
+check('保存只重跑本地分析，不发任何写文件的请求',
+  fetchCalls.every((call) => call.url.includes('/tutor/analyze')),
+  JSON.stringify(fetchCalls.map((c) => `${c.method} ${c.url}`)));
+check('提示语说清"没有写进任何文件"',
   el.toast.textContent.includes('没有写进任何文件'), el.toast.textContent);
-check('不在项目库里的代码：保存后 state.code 已更新',
-  api.state.code === 'print(2)\n');
 
-// ---- GBK 文件保存：编码会被统一成 UTF-8，必须如实说明 ----
-primeLibraryFile({ encoding: 'gbk' });
+// ---- 放弃修改：有未保存内容时先确认 ----
 api.startEdit();
-el.codeEditor.value = 'x = 1\n';
+el.codeEditor.value = 'print(3)\n';
 api.onEditorInput();
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-queueResponse({ rel_path: 'homework/main.py', sha256: 'sha-gbk', size_bytes: 6,
-  line_count: 1, char_count: 6, message: '已保存 homework/main.py', newline: '\r\n' });
-queueResponse({ files: [], roots: [], total_files: 0, total_lines: 0, language_counts: {},
-  language_labels: {}, allow_write: true, trash_dir_name: '.trash' });
-queueResponse({ filename: 'homework/main.py', language: 'python', language_label: 'Python',
-  line_count: 1, char_count: 6, symbols: [] });
-await api.saveEdit();
-check('保存 GBK 文件时如实说明"已按 UTF-8 保存"（不让学生以为出了乱码）',
-  el.toast.textContent.includes('UTF-8'), el.toast.textContent);
-
-/* ---------------------------------------------------------------------------
-   9. 替换 / 删除（项目库文件）
-   ------------------------------------------------------------------------- */
-console.log();
-console.log('【9】替换与删除');
-
-// 绑定真实的事件处理（弹窗按钮、替换选择框、Esc 关闭）。
-// 不绑的话只能调 closeConfirm() 去"假装用户点了"，测不到按钮到底有没有接上。
-api.bindFileActions();
-
-// ---- 列表里的按钮：可写时才有，只读时不渲染 ----
-api.state.allowWrite = true;
-api.renderLibraryFiles([
-  { rel_path: 'homework/main.py', root: 'library', filename: 'main.py',
-    language_label: 'Python', line_count: 2, size_bytes: 30, too_large: false },
-]);
-check('可写模式下列表项带「替换 / 删除」按钮',
-  el.libraryList.innerHTML.includes('data-act="replace"')
-  && el.libraryList.innerHTML.includes('data-act="delete"'));
-
-api.state.allowWrite = false;
-api.renderLibraryFiles([
-  { rel_path: 'homework/main.py', root: 'library', filename: 'main.py',
-    language_label: 'Python', line_count: 2, size_bytes: 30, too_large: false },
-]);
-check('只读模式下不渲染这两个按钮（少一个误操作的入口）',
-  !el.libraryList.innerHTML.includes('data-act='));
-
-// ---- 只读时点删除：只提示，不发请求 ----
-api.state.allowWrite = false;
-fetchCalls.length = 0;
-await api.requestDelete({ rel_path: 'homework/main.py', root: 'library',
-  filename: 'main.py', size_bytes: 30 });
-check('只读模式下点删除：不弹确认框、不发请求',
-  el.confirmModal.classList.contains('hidden') && fetchCalls.length === 0);
-
-// ---- 正常删除：弹确认 → DELETE → 刷新列表 ----
-api.state.allowWrite = true;
-api.state.libraryTarget = null;
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-const deletePromise = api.requestDelete({ rel_path: 'homework/main.py', root: 'library',
-  filename: 'main.py', size_bytes: 30 });
+const cancelPromise = api.cancelEdit();
 await new Promise((resolve) => setImmediate(resolve));
-check('删除前弹确认框，并写明要删哪个文件',
-  !el.confirmModal.classList.contains('hidden')
-  && el.confirmText.textContent.includes('homework/main.py'),
-  el.confirmText.textContent);
-check('确认框里说明白"移到 .trash 还能找回"',
-  el.confirmText.textContent.includes('.trash'));
-check('确认按钮用了危险样式（红色）',
-  el.confirmOkBtn.classList.contains('btn--danger'));
+check('放弃修改前先弹确认框',
+  !el.confirmModal.classList.contains('hidden'));
+api.closeConfirm(false);
+await cancelPromise;
+check('取消确认后仍在编辑态（内容没丢）', api.state.editing === true);
 
-queueResponse({ rel_path: 'homework/main.py', permanent: false, trash_path: 'D:\\lib\\.trash\\x',
-  trash_dir: 'D:\\lib\\.trash', size_bytes: 30, message: '已把 homework/main.py 移到回收站' });
-queueResponse({ files: [], roots: [], total_files: 0, total_lines: 0, language_counts: {},
-  language_labels: {}, allow_write: true, trash_dir_name: '.trash' });
-fire(el.confirmOkBtn, 'click');      // 真的点「删除」按钮，验证按钮确实接上了
-await deletePromise;
-
-const deleteCall = findCall('DELETE', '/api/v1/library/file');
-check('确认后发出 DELETE /api/v1/library/file', Boolean(deleteCall));
-check('请求里带上了路径参数',
-  Boolean(deleteCall) && deleteCall.url.includes('path=homework') , deleteCall && deleteCall.url);
-check('删除后提示里说明文件去哪了',
-  el.toast.textContent.includes('回收站'), el.toast.textContent);
-check('删除后刷新了项目库列表', Boolean(findCall('GET', '/api/v1/library/scan')));
-
-// ---- 删掉的正好是当前打开的文件：预览要一起清空 ----
-api.state.libraryTarget = { relPath: 'a/b.py', root: 'library', sha256: '' };
-api.state.code = 'x = 1\n';
-api.state.savedCode = 'x = 1\n';
-api.setHasCode(true);
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-const deleteOpen = api.requestDelete({ rel_path: 'a/b.py', root: 'library',
-  filename: 'b.py', size_bytes: 6 });
+const cancelPromise2 = api.cancelEdit();
 await new Promise((resolve) => setImmediate(resolve));
-queueResponse({ rel_path: 'a/b.py', permanent: false, trash_path: 't', trash_dir: 'd',
-  size_bytes: 6, message: '已删除' });
-queueResponse({ files: [], roots: [], total_files: 0, total_lines: 0, language_counts: {},
-  language_labels: {}, allow_write: false, trash_dir_name: '.trash' });
 api.closeConfirm(true);
-await deleteOpen;
-check('删掉的正是当前预览的文件 → 代码区一起清空（避免"看着一个不存在的文件"）',
-  api.state.hasCode === false && el.codeBlock.classList.contains('hidden'));
-
-// ---- 替换：扩展名不一致时直接拦下 ----
-function fakePickedFile(name, text) {
-  return { name, size: text.length, text: async () => text };
-}
-
-api.state.replaceTarget = { rel_path: 'homework/main.py', root: 'library',
-  filename: 'main.py', size_bytes: 30 };
-fetchCalls.length = 0;
-el.replaceInput.files = [fakePickedFile('other.c', 'int main(void){return 0;}\n')];
-await api.performReplace(el.replaceInput);
-check('替换时扩展名不一致 → 拦下并给出正确做法',
-  fetchCalls.length === 0 && el.toast.textContent.includes('同类型文件'),
-  el.toast.textContent);
-
-// ---- 替换：正常流程（确认 → PUT）----
-api.state.replaceTarget = { rel_path: 'homework/main.py', root: 'library',
-  filename: 'main.py', size_bytes: 30 };
-api.state.libraryTarget = null;
-fetchCalls.length = 0;
-fetchQueue.length = 0;
-el.replaceInput.files = [fakePickedFile('new_main.py', 'def add(a, b):\n    return a + b\n')];
-const replacePromise = api.performReplace(el.replaceInput);
-await new Promise((resolve) => setImmediate(resolve));
-check('替换前弹确认框，并说明原内容会被覆盖',
-  !el.confirmModal.classList.contains('hidden')
-  && el.confirmText.textContent.includes('覆盖'),
-  el.confirmText.textContent);
-
-queueResponse({ rel_path: 'homework/main.py', sha256: 'sha-r', size_bytes: 30,
-  line_count: 2, char_count: 29, message: '已保存' });
-queueResponse({ files: [], roots: [], total_files: 0, total_lines: 0, language_counts: {},
-  language_labels: {}, allow_write: true, trash_dir_name: '.trash' });
-api.closeConfirm(true);
-await replacePromise;
-
-const replacePut = findCall('PUT', '/api/v1/library/file');
-check('替换 = 用本机文件的内容覆盖项目库里的那个路径',
-  Boolean(replacePut) && JSON.parse(replacePut.options.body).path === 'homework/main.py'
-  && JSON.parse(replacePut.options.body).code.includes('return a + b'));
-check('替换成功后给出明确反馈',
-  el.toast.textContent.includes('替换'), el.toast.textContent);
-
-// ---- 替换的入口按钮：点它会唤起隐藏的文件选择框 ----
-api.state.replaceTarget = null;
-el.replaceInput._clicked = 0;
-api.requestReplace({ rel_path: 'homework/main.py', root: 'library',
-  filename: 'main.py', size_bytes: 30 });
-check('点「替换」→ 唤起文件选择框，并记下目标文件',
-  el.replaceInput._clicked === 1
-  && api.state.replaceTarget && api.state.replaceTarget.rel_path === 'homework/main.py');
-
-// ---- Esc 关闭弹窗 ----
-api.showConfirm({ title: '测试', text: '内容' });
-check('弹窗打开时不是 hidden', !el.confirmModal.classList.contains('hidden'));
-fireDocument('keydown', { key: 'Escape' });
-check('按 Esc 关闭弹窗（等价于点取消）',
-  el.confirmModal.classList.contains('hidden'));
-
-// ---- 点「取消」按钮同样关掉弹窗，而且不会误发请求 ----
-fetchCalls.length = 0;
-let cancelResult = null;
-const cancelProbe = api.showConfirm({ title: '再测一次', text: '内容' }).then((v) => { cancelResult = v; });
-fire(el.confirmCancelBtn, 'click');
-await cancelProbe;
-check('点「取消」→ 弹窗关闭且返回 false（不会误删）',
-  cancelResult === false && fetchCalls.length === 0);
-void cancelProbe;
-
+await cancelPromise2;
+check('确认放弃后回到原始内容', api.state.code === 'print(2)\n', api.state.code);
+check('确认放弃后退出编辑态', api.state.editing === false);
 /* ---------------------------------------------------------------------------
    10. 模型设置（选模型 + 填自己的 API Key）
    ------------------------------------------------------------------------- */
@@ -2082,6 +1767,55 @@ check('弹窗里有反复出错的语句表', previewHtml.includes('code-line'))
 check('弹窗里带上了学习建议原文', previewHtml.includes('累计错 3 次'));
 check('弹窗里有错题明细表', previewHtml.includes('report-view__table'));
 check('弹窗里列出了知识点', previewHtml.includes('循环边界'));
+
+// ---- 9. 每次 AI 动作完成后自动刷新（错题本 + 能力雷达）----
+console.log();
+console.log('='.repeat(72));
+console.log('自动刷新  每次 AI 动作完成后错题本与雷达图都要更新');
+console.log('='.repeat(72));
+
+// 学生做完一次诊断，能力分就变了。但雷达图原来只在页面初始化与切换
+// 统计区间时才拉数据 —— 不自动刷的话他看到的是旧分数，
+// 看不到自己这一步的影响，反馈闭环就断在这里。
+fetchCalls.length = 0;
+fetchQueue.length = 0;
+queueResponse({ student_id: 'local', total: 0, items: [], weak_points: [] });
+queueResponse({
+  student_id: 'local', generated_at: '2026-09-21T10:00:00Z',
+  range_key: '30', range_label: '最近 30 天', app_version: '0.1.0',
+  usage: {
+    student_id: 'local', range_label: '最近 30 天', total_seconds: 60,
+    total_text: '1 分 0 秒', session_count: 1, active_days: 1,
+    average_seconds: 60, average_text: '1 分 0 秒',
+    last_used_at: null, daily: [], sessions: [],
+  },
+  errors: { total: 0, listed: 0, weak_points: [], by_type: [], by_language: [], items: [] },
+  ability: { dimensions: [], evidence_total: 0, weakest: '', strongest: '', spread: 0,
+             summary: '', headline: '', guide: '', has_trend: false, previous_total: 0,
+             trend_note: '' },
+  insights: { threshold: 85, summary: '', items: [] },
+  recurring: { min_records: 2, summary: '', items: [] },
+  suggestions: [],
+});
+await api.refreshAfterAiAction();
+check('自动刷新会重新拉错题本',
+  Boolean(findCall('GET', '/api/v1/tutor/errors')));
+check('自动刷新会重新拉学习报告（能力雷达的数据源）',
+  Boolean(findCall('GET', '/api/v1/report/summary')));
+
+// 刷新失败不能把"这次分析成功了"变成一次报错
+fetchCalls.length = 0;
+fetchQueue.length = 0;
+// fetch 桩用"排队一个 500 响应"来模拟失败
+queueResponse({ detail: '网络断了' }, { status: 500 });
+queueResponse({ detail: '网络断了' }, { status: 500 });
+let refreshThrew = false;
+try {
+  await api.refreshAfterAiAction();
+} catch (err) {
+  refreshThrew = true;
+}
+check('刷新失败时不抛异常（不污染"分析成功"这个结果）', refreshThrew === false);
 
 // ---- 8. 能力雷达图（六维，手写 SVG）----
 console.log();

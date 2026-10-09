@@ -27,8 +27,6 @@ from app.core.llm_client import get_llm_client
 from app.services.code_checker import CodeChecker
 from app.services.code_fixer import CodeFixer
 from app.services.comment_generator import CommentGenerator
-from app.services.file_classifier import FileClassifier
-from app.services.library_service import LibraryService
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AppSettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -58,30 +56,6 @@ def get_tutor_agent(settings: AppSettingsDep) -> TutorAgent:
 
 
 TutorAgentDep = Annotated[TutorAgent, Depends(get_tutor_agent)]
-
-
-def get_library(settings: AppSettingsDep) -> LibraryService:
-    """本地项目库服务。
-
-    服务本身无状态（只持有配置），按请求构造即可；
-    从 settings 现取现用，测试里覆盖 LIBRARY__ROOTS 后立刻生效。
-    """
-    return LibraryService(settings.library)
-
-
-LibraryServiceDep = Annotated[LibraryService, Depends(get_library)]
-
-
-def get_file_classifier(settings: AppSettingsDep) -> FileClassifier:
-    """本地代码文件分类器（扫描 + 按语言归档）。
-
-    无状态（只持有配置），按请求构造即可；从 settings 现取现用，
-    测试里覆盖 CLASSIFIER__ROOT 后立刻生效。
-    """
-    return FileClassifier(settings.classifier)
-
-
-FileClassifierDep = Annotated[FileClassifier, Depends(get_file_classifier)]
 
 
 def get_code_checker(settings: AppSettingsDep) -> CodeChecker:
@@ -129,14 +103,10 @@ __all__ = [
     "CodeFixerDep",
     "CommentGeneratorDep",
     "DbSession",
-    "FileClassifierDep",
-    "LibraryServiceDep",
     "TutorAgentDep",
     "get_api_key_manager",
     "get_code_checker",
     "get_code_fixer",
     "get_comment_generator",
-    "get_file_classifier",
-    "get_library",
     "get_tutor_agent",
 ]

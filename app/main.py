@@ -11,9 +11,7 @@
     /api/analyze       POST：上条的**兼容别名**，按需求文档的
                        `{student_id, language, code_content}` JSON 契约调用，
                        内部直接转调 /api/v1/tutor/diagnose
-    /api/v1/library    本地项目库：扫描 / 浏览 / 在线编辑 / 替换 / 删除（删除进 .trash）
-    /api/v1/files      文件自动分类：把 .c/.h/.java/.py 归档到 c/ java/ python/，
-                       并接收前端拖拽上传（POST /upload）
+                               并接收前端拖拽上传（POST /upload）
     /api/v1/check      AI 自动检测：本地语法检查（AST / Tree-sitter）+ AI 深度检测
     /api/v1/fix        AI 代码改错：本地分析 → AI 修正 → 本地复检（四问式讲解）
     /api/v1/comment    AI 注释生成：文件级 / 函数级 / 行内三层注释 + 代码未改动复检
