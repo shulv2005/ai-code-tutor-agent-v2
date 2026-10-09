@@ -10,14 +10,14 @@
 
   页面分区（从上到下、从左到右）：
     ① 顶部栏      标题 + AI 服务状态
-    ② 左侧栏      模型设置  ⁄  选择你的代码  ⁄  学习报告
+    ② 左侧栏      模型设置  ⁄  文件选择  ⁄  本地项目库  ⁄  分类结果
     ③ 中间主区    代码展示（带语法高亮）
     ④ 右侧结果区  **上下分栏**：
                      上半 = 当前代码的 AI 分析结果（检测 / 注释 / 改错 / 诊断结论）
                      下半 = 错题本 & 举一反三（易错知识点、新题目、Markdown 解析）
                    两半之间的水平分隔条可以拖动，高度会记进 localStorage。
 
-  与后端对接：全部通过 fetch 调用 /api/v1/tutor/* 与 /api/v1/report/* 接口，
+  与后端对接：全部通过 fetch 调用 /api/v1/tutor/* 与 /api/v1/library/* 接口，
   具体见 js/app.js 顶部的 API 配置区。错题本相关的接口是：
     POST   /api/v1/tutor/diagnose  一次拿到"诊断结论 + 错题本内容"
     GET    /api/v1/tutor/errors    错题本列表 + 易错知识点聚合
@@ -76,7 +76,7 @@
 
       <!--
         导出 Word 学习报告：**放在顶栏**而不是只放在左栏那张卡片里。
-        左栏是纵向滚动区，卡片一多最下面那张就看不见了 ——
+        左栏是纵向滚动区，② 本地项目库的文件列表一长，最下面的卡片就看不见了 ——
         功能明明做了却找不到，等于没做。顶栏常驻，任何窗口尺寸下都在。
         href 由 JS 按当前统计区间拼（见 syncReportLinks）。
       -->
@@ -187,6 +187,75 @@
         </details>
       </section>
 
+      <!-- ---------- 2.2 本地项目库 ---------- -->
+      <section class="card">
+        <h2 class="card__title">
+          ② 本地项目库
+          <!-- 重新扫描：学生把新作业放进文件夹后点一下就能看到 -->
+          <button class="btn btn--mini" id="refreshLibrary" title="重新扫描">↻</button>
+        </h2>
+
+        <!--
+          拖拽区 B：把文件拖到这里 = **加入项目库**（会真的存到服务器上的文件夹里）
+          与拖拽区 A 的区别就在这里：
+            · A（① 选择你的代码）：只看一眼，不改动任何东西
+            · B（本区域）        ：入库 + 按语言归档 + 更新下面这份列表
+          这个区别在界面上必须写清楚，否则学生分不清"我到底交没交作业"。
+        -->
+        <div class="dropzone dropzone--library" id="libraryDropzone">
+          <p class="dropzone__text">拖到这里即加入项目库</p>
+          <p class="dropzone__hint">会保存到服务器的代码文件夹，并按语言自动归类</p>
+        </div>
+
+        <!--
+          项目库文件夹路径（常显，不随文件数量增减而出现/消失）：
+          这是使用中被问得最多的一个问题——"我的代码到底存在电脑的哪个文件夹？"
+          所以这里始终显示后端真实配置的绝对路径，并提供「复制」按钮，
+          学生可以直接粘到文件资源管理器的地址栏里打开那个文件夹。
+          路径文字由 JS 的 renderLibraryPath() 用 /api/v1/library/scan 返回的 roots 填入。
+        -->
+        <p class="library__path">
+          <span class="library__path-label">项目库文件夹</span>
+          <!-- title 里放完整路径：路径太长被 CSS 截断时，鼠标悬停仍能看到全部 -->
+          <code class="library__path-value" id="libraryPathValue" title="正在读取…">正在读取…</code>
+          <button class="btn btn--mini" id="copyLibraryPath" type="button"
+                  title="复制完整路径">复制</button>
+        </p>
+
+        <!-- 提示文字：由 JS 填入实际扫描的文件夹路径 -->
+        <p class="library__hint" id="libraryHint">正在扫描本地代码…</p>
+
+        <!--
+          只读模式说明：后端配了 LIBRARY__ALLOW_WRITE=false 时由 JS 显示。
+          只读就明明白白写出来——否则学生点不到「替换 / 删除」，
+          会以为是页面坏了。
+        -->
+        <p class="library__readonly hidden" id="libraryReadOnlyHint"></p>
+
+        <!-- 语言筛选按钮：JS 按扫描结果生成，例如「全部 12 / C 5 / Java 4 / Python 3」 -->
+        <div class="chips" id="libraryChips"></div>
+
+        <!-- 文件列表：点击某一项即把该文件载入中间代码区 -->
+        <ul class="files" id="libraryList">
+          <li class="files__empty">正在扫描…</li>
+        </ul>
+
+        <!-- 文件数达到上限时的提示 -->
+        <p class="library__more" id="libraryMore" hidden></p>
+      </section>
+
+      <!-- ---------- 2.3 代码分类结果 ---------- -->
+      <section class="card" id="classifyCard" hidden>
+        <h2 class="card__title">③ 自动分类结果</h2>
+        <!-- 由 JS 填充：语言、行数、函数与类的数量 -->
+        <dl class="kv" id="classifyList"></dl>
+        <!-- 代码结构（函数/类清单），可展开查看 -->
+        <details class="structure" id="structureBox" hidden>
+          <summary>查看代码结构</summary>
+          <ul class="structure__list" id="structureList"></ul>
+        </details>
+      </section>
+
       <!-- ---------- 2.4 学习报告（给老师看的那份） ---------- -->
       <!--
         这一块回答两个问题：
@@ -197,7 +266,7 @@
       -->
       <section class="card" id="reportCard">
         <h2 class="card__title">
-          ② 学习报告
+          ④ 学习报告
           <button class="btn btn--mini" id="refreshReport" title="重新统计">↻</button>
         </h2>
 
@@ -298,12 +367,6 @@
           <!-- 语言标签，例如 C / Python -->
           <span class="badge badge--accent" id="codeLangBadge" hidden></span>
           <!--
-            代码规模小结（行数 / 函数类数）：由 /tutor/analyze 本地算出，
-            不调用大模型。原来是侧栏一张「自动分类结果」卡片，
-            收进标题栏既少一张卡片，学生又不用移开视线。
-          -->
-          <span class="code-stat" id="codeStat" hidden></span>
-          <!--
             未保存标记：进入编辑后只要改过内容就显示，
             避免学生写了一大段、以为自动保存了，刷新页面才发现白写。
           -->
@@ -320,8 +383,9 @@
 
         <!--
           拖拽区 C：中间代码预览区
-          —— 语义是「只想看看」：拖进来只预览 + 高亮，**不写任何文件**。
-          学生拖错地方也不会把不想交的东西存到磁盘上。
+          —— 语义是「只想看看」：拖进来只预览 + 高亮，**不写入项目库**。
+          这样设计是为了避免误操作：学生往预览区一拖就把别人的作业塞进项目库，
+          列表会越来越乱；要入库必须明确拖到左边「② 本地项目库」的虚线框里。
         -->
         <div class="code-wrap" id="codeDropzone" data-min-height="120">
           <!--

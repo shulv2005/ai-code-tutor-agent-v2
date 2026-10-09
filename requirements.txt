@@ -5,6 +5,7 @@
 #       学生双击一个 .bat 就能把整套系统跑起来，不需要懂 pip。
 #
 # 覆盖的功能模块（详见 README.md）：
+#   · 代码文件自动分类        app/services/file_classifier.py
 #   · AI 自动检测（语法+深度） app/services/code_checker.py
 #   · AI 代码改错            app/services/code_fixer.py
 #   · AI 注释生成            app/services/comment_generator.py

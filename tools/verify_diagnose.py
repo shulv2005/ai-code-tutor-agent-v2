@@ -107,6 +107,8 @@ def main() -> int:
         "RETRIEVAL__INDEX_DIR": str(work / "index"),
         "REPOSITORY__WORKSPACE_DIR": str(work / "repos"),
         "DOCKER__WORKSPACE_DIR": str(work / "ws"),
+        "CLASSIFIER__ROOT": str(work / "codes"),
+        "LIBRARY__ROOTS": str(work / "library"),
         "APP__LOG_LEVEL": "WARNING",
         "PYTHONIOENCODING": "utf-8",
     }

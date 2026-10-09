@@ -1,4 +1,4 @@
-"""前端对接验收：真实启动服务，验证静态页面 + tutor 接口。
+"""前端对接验收：真实启动服务，验证静态页面 + tutor + library 全部接口。
 
 覆盖：
   1. 前端页面能被访问（/ 重定向到 /ui/index.html，静态资源可下载）
@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -90,15 +89,26 @@ def form_body(filename: str, code: str) -> tuple[bytes, str]:
 
 
 def main() -> int:
-    # 临时数据目录：验收绝不能碰到开发者本机的 data/app.db
-    # （原来这个临时目录只给项目库用，项目库删掉后改用它隔离数据库）
     work = Path(tempfile.mkdtemp())
+    # 项目库指向临时目录：验收不能去扫开发者本机真实的作业文件夹，
+    # 否则"扫到几个文件"这类断言会随每台机器而变化，结果不可复现。
+    library_root = work / "library"
+    (library_root / "homework").mkdir(parents=True)
+    (library_root / "homework" / "linked_list.c").write_bytes(C_CODE.encode("utf-8"))
+    (library_root / "homework" / "Calculator.java").write_bytes(JAVA_CODE.encode("utf-8"))
+    (library_root / "homework" / "demo.py").write_bytes(PY_CODE.encode("utf-8"))
+    (library_root / "README.md").write_bytes(b"# not code\n")
+    (library_root / "node_modules").mkdir()
+    (library_root / "node_modules" / "dep.js").write_bytes(b"function dep() {}\n")
+
     env = {
-        # env= 是**整个替换**环境，不是叠加：少了 PATH / SystemRoot，
-        # Windows 上连 socket 都初始化不了（WinError 10106）。
-        "PATH": os.environ.get("PATH", ""),
-        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-        "DATABASE__SQLITE_PATH": str(work / "verify.db"),
+        "PATH": __import__("os").environ.get("PATH", ""),
+        "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", ""),
+        "DATABASE__SQLITE_PATH": str(work / "t.db"),
+        "RETRIEVAL__INDEX_DIR": str(work / "index"),
+        "REPOSITORY__WORKSPACE_DIR": str(work / "repos"),
+        "DOCKER__WORKSPACE_DIR": str(work / "ws"),
+        "LIBRARY__ROOTS": str(library_root),
         "LLM__API_KEY": "",          # 刻意不配置模型，验证提示是否友好
         "APP__LOG_LEVEL": "WARNING",
         "PYTHONIOENCODING": "utf-8",
@@ -217,6 +227,59 @@ def main() -> int:
         print(f"  {'OK ' if ok else 'FAIL'} {code}  GET /api/v1/tutor/history（应为 404）")
 
         print()
+        print("=" * 72)
+        print("5. 本地项目库（扫描分类 / 读取 / 越界拦截）")
+        print("=" * 72)
+        code, scan = request("GET", "/api/v1/library/scan")
+        if code == 200 and isinstance(scan, dict):
+            names = sorted(item["filename"] for item in scan["files"])
+            ok = (
+                scan["total_files"] == 3
+                and scan["language_counts"] == {"c": 1, "java": 1, "python": 1}
+                # 非源码文件与 node_modules 里的代码都不能出现
+                and "README.md" not in names
+                and "dep.js" not in names
+            )
+            checks.append(("项目库扫描分类", ok))
+            print(f"  {'OK ' if ok else 'FAIL'} {code}  文件={scan['total_files']} "
+                  f"分类={scan['language_counts']} 列表={names}")
+        else:
+            checks.append(("项目库扫描分类", False))
+            print(f"  FAIL {code}  {scan}")
+
+        code, only_py = request("GET", "/api/v1/library/scan?language=python")
+        ok = code == 200 and isinstance(only_py, dict) and only_py["total_files"] == 1
+        checks.append(("项目库语言筛选", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  只看 python -> "
+              f"{[i['filename'] for i in only_py.get('files', [])] if isinstance(only_py, dict) else only_py}")
+
+        code, content = request(
+            "GET", "/api/v1/library/file?path=homework%2Flinked_list.c"
+        )
+        ok = (
+            code == 200
+            and isinstance(content, dict)
+            and content.get("language") == "c"
+            and "int main" in content.get("code", "")
+        )
+        checks.append(("项目库读取文件", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  linked_list.c -> "
+              f"{content.get('language_label') if isinstance(content, dict) else content} "
+              f"行数={content.get('line_count') if isinstance(content, dict) else '-'}")
+
+        # 路径穿越必须被拒绝：这是本地服务最重要的一条安全边界
+        code, blocked = request("GET", "/api/v1/library/file?path=../../windows/win.ini")
+        ok = code == 400
+        checks.append(("项目库路径越界拦截", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  ../../windows/win.ini -> "
+              f"{blocked.get('detail') if isinstance(blocked, dict) else blocked}")
+
+        code, status = request("GET", "/api/v1/library/status")
+        ok = code == 200 and isinstance(status, dict) and status.get("roots")
+        checks.append(("项目库状态接口", ok))
+        print(f"  {'OK ' if ok else 'FAIL'} {code}  根目录="
+              f"{[r['path'] for r in status.get('roots', [])] if isinstance(status, dict) else status}")
+
         print()
         print("=" * 72)
         passed = sum(1 for _, ok in checks if ok)

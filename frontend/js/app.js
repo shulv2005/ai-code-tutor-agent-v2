@@ -25,6 +25,15 @@
       POST /diagnose             AI 诊断（错题本 + 举一反三）★ 新增
       GET  /errors               错题本列表 + 易错知识点聚合
       DELETE /errors/{id}        删除一条错题
+     /api/v1/library 下（本地项目库，不需要大模型）：
+      GET  /scan                 扫描本地文件夹并按语言分类
+      GET  /file                 读取某个文件的代码内容（带 sha256，用于乐观锁）
+      PUT  /file                 覆盖保存（在线编辑保存 / 用本机文件替换）
+      DELETE /file               删除（默认移进 .trash 回收站，可找回）
+      GET  /status               项目库配置（代码该放哪个文件夹、是否允许写入）
+     /api/v1/files 下（拖拽入库）：
+      POST /upload               把文件存到服务器的代码文件夹
+      POST /scan                 按语言归档到 c/ java/ python/，并写入台账
    ========================================================================== */
 
 'use strict';
@@ -45,6 +54,7 @@ const API_BASE = '/api/v1/tutor';
  * 本地项目库接口地址。
  * 单独一个常量而不是拼字符串，是为了以后换部署方式时一眼能看清有几处地址。
  */
+const LIBRARY_BASE = '/api/v1/library';
 
 /**
  * 文件管理接口地址（拖拽入库 / 按语言归档 / 台账）。
@@ -52,6 +62,7 @@ const API_BASE = '/api/v1/tutor';
  *   1) POST /upload  把文件存到服务器的代码文件夹
  *   2) POST /scan    按语言归档到 c/ java/ python/，并写入 SQLite 台账
  */
+const FILES_BASE = '/api/v1/files';
 
 /**
  * 模型与 API Key 接口地址。
@@ -74,10 +85,15 @@ const state = {
   languageLabel: '',   // 语言展示名
   aiAvailable: false,  // 后端 .env 里是否配置了大模型
   backendModel: '',    // 后端默认模型名（用于徽章上显示）
+  libraryFiles: [],    // 项目库扫描到的文件
+  libraryFilter: '',   // 当前选中的语言筛选（'' 表示全部）
+  libraryRoots: [],    // 项目库根目录（含绝对路径），供「复制路径」按钮使用
   // ---- 项目库写入相关的状态 ----
+  allowWrite: true,    // 后端是否允许编辑/替换/删除（LIBRARY__ALLOW_WRITE）
   trashDirName: '.trash',  // 回收站目录名，删除后的提示语里要用
   // 当前预览的代码来自项目库里的哪个文件；不是库文件时为 null。
   // 在线编辑保存要靠它决定"写回哪个文件"，没它就只能改预览。
+  libraryTarget: null, // { relPath, root, sha256 }
   replaceTarget: null, // 点「替换」时记下的目标文件，等学生选完本机文件再用
   // ---- 在线编辑状态 ----
   editing: false,      // 是否处于编辑模式
@@ -118,19 +134,33 @@ const el = {
   refreshModels: document.getElementById('refreshModels'),
 
   // 左侧栏
-  pasteName: document.getElementById('pasteName'),
-  pasteCode: document.getElementById('pasteCode'),
-  // 「① 选择你的代码」的拖拽区与隐藏的文件选择框
   dropzone: document.getElementById('dropzone'),
   fileInput: document.getElementById('fileInput'),
+  pasteName: document.getElementById('pasteName'),
+  pasteCode: document.getElementById('pasteCode'),
   pasteBtn: document.getElementById('pasteBtn'),
+  classifyCard: document.getElementById('classifyCard'),
+  classifyList: document.getElementById('classifyList'),
+  structureBox: document.getElementById('structureBox'),
+  structureList: document.getElementById('structureList'),
+
+  // 本地项目库
+  libraryHint: document.getElementById('libraryHint'),
+  libraryChips: document.getElementById('libraryChips'),
+  libraryList: document.getElementById('libraryList'),
+  libraryMore: document.getElementById('libraryMore'),
+  refreshLibrary: document.getElementById('refreshLibrary'),
+  libraryDropzone: document.getElementById('libraryDropzone'),
+  // 项目库文件夹路径：常显，回答"我的代码存在哪个文件夹"（需求：本地项目库位置可见）
+  libraryPathValue: document.getElementById('libraryPathValue'),
+  copyLibraryPath: document.getElementById('copyLibraryPath'),
 
   // 顶部状态
   aiBadge: document.getElementById('aiBadge'),
   langBadge: document.getElementById('langBadge'),
   resetLayout: document.getElementById('resetLayout'),
   // 顶栏常驻的「本次已使用」与「导出学习报告」。
-  // 左栏那张 ② 学习报告 卡片是详情视图，但它在滚动区最底下，
+  // 左栏那张 ④ 学习报告 卡片是详情视图，但它在滚动区最底下，
   // 关键入口必须同时出现在顶栏，否则功能做了也找不到。
   topbarUsage: document.getElementById('topbarUsage'),
   topbarExport: document.getElementById('topbarExport'),
@@ -138,7 +168,6 @@ const el = {
   // 代码区
   codeTitle: document.getElementById('codeTitle'),
   codeLangBadge: document.getElementById('codeLangBadge'),
-  codeStat: document.getElementById('codeStat'),
   // 占位提示：显隐靠加/减 hidden 类，不改它的文字
   codePlaceholder: document.getElementById('code-placeholder'),
   codeDropzone: document.getElementById('codeDropzone'),
@@ -155,6 +184,7 @@ const el = {
   codeEditor: document.getElementById('codeEditor'),
 
   // 替换文件用的一次性选择器 + 确认弹窗
+  replaceInput: document.getElementById('replaceInput'),
   confirmModal: document.getElementById('confirmModal'),
   confirmTitle: document.getElementById('confirmTitle'),
   confirmText: document.getElementById('confirmText'),
@@ -286,7 +316,7 @@ function toast(message, kind = 'info') {
  *
  * @param {string} path   接口路径，例如 '/check'
  * @param {object} options fetch 的选项；body 可直接传普通对象
- * @param {string} base   接口前缀，默认是 AI 导师接口
+ * @param {string} base   接口前缀，默认是 AI 导师接口；项目库接口传 LIBRARY_BASE
  * @returns {Promise<object>} 后端返回的 JSON
  */
 async function api(path, options = {}, base = API_BASE) {
@@ -556,6 +586,30 @@ function applyCodeVisibility() {
 }
 
 /**
+ * 刷新「编辑 / 保存 / 取消」三个按钮的显隐与可用状态。
+ *
+ * 只读模式（LIBRARY__ALLOW_WRITE=false）下：
+ *   · 项目库里的文件：编辑按钮直接禁用，鼠标悬停能看到原因；
+ *   · 只是拖进来/粘贴的代码（不落盘）：照样可以改着玩，保存时只更新预览。
+ */
+function refreshEditButtons() {
+  const isLibraryFile = Boolean(state.libraryTarget);
+  const readOnly = isLibraryFile && !state.allowWrite;
+
+  el.codeEditBtn.hidden = state.editing;
+  el.codeSaveBtn.hidden = !state.editing;
+  el.codeCancelBtn.hidden = !state.editing;
+
+  el.codeEditBtn.disabled = !state.hasCode || readOnly;
+  el.codeEditBtn.title = readOnly
+    ? '项目库当前是只读模式（LIBRARY__ALLOW_WRITE=false），不能修改文件'
+    : '在线编辑这段代码';
+
+  // 未保存标记：只有真的改过内容才显示，否则"进去又出来"也会闪一个警告，很吵
+  el.codeDirtyBadge.classList.toggle('hidden', !state.editing || !state.dirty);
+}
+
+/**
  * 清空当前代码，让占位提示重新出现（需求一第 4 条）。
  *
  * 清空的不只是代码本身，还有跟着它产生的一切：
@@ -578,6 +632,7 @@ function clearCode(options = {}) {
   state.savedCode = '';
   state.language = '';
   state.languageLabel = '';
+  state.libraryTarget = null;
 
   // 退出编辑模式并清掉"未保存"标记，否则清空后还挂着一个红点
   state.editing = false;
@@ -589,6 +644,10 @@ function clearCode(options = {}) {
   el.codeContent.textContent = '';
   el.codeContent.className = '';
   el.codeTitle.textContent = '代码预览';
+
+  // 上一份代码的分类结论作废
+  el.classifyCard.hidden = true;
+  el.structureBox.hidden = true;
 
   // 右侧结果区回到空状态
   el.resultEmpty.hidden = false;
@@ -1111,13 +1170,157 @@ function safeSplitPoint(lines, start, size, lang) {
      · 编辑过程中 `state.code` 实时跟着走，所以三个 AI 按钮可以直接
        分析"你正在写的这一版"，不必先保存。
      · 「保存」的落点分两种，且**必须对学生说清楚**：
-                2) 拖进来/粘贴的代码 → 只更新预览，不写任何文件（提示里讲明白）。
+         1) 项目库里的文件 → PUT /library/file 真的写回磁盘；
+         2) 拖进来/粘贴的代码 → 只更新预览，不写任何文件（提示里讲明白）。
    ========================================================================== */
 
 /** 把「有没有未保存的改动」反映到界面上的小标记 */
 function setDirty(dirty) {
   state.dirty = Boolean(dirty);
   el.codeDirtyBadge.classList.toggle('hidden', !state.editing || !state.dirty);
+}
+
+/**
+ * 进入编辑模式。
+ * 编辑器的初始内容取 `state.code`（也就是当前预览的这一份）。
+ */
+function startEdit() {
+  if (!state.hasCode) {
+    toast('先放一段代码进来再编辑', 'info');
+    return;
+  }
+  if (state.libraryTarget && !state.allowWrite) {
+    // 正常情况下按钮已经禁用了，这里是双保险（例如键盘直接触发）
+    toast('项目库当前是只读模式，不能修改文件', 'info');
+    return;
+  }
+
+  state.savedCode = state.code;
+  el.codeEditor.value = state.code;
+  state.editing = true;
+  setDirty(false);
+  el.codeDropzone.classList.add('is-editing');
+  applyCodeVisibility();
+  syncEditorGutter();
+
+  if (typeof el.codeEditor.focus === 'function') el.codeEditor.focus();
+}
+
+/**
+ * 退出编辑模式并还原成"载入时的那一份"。
+ * 有未保存改动时先确认，避免手滑把写了一半的代码扔掉。
+ */
+async function cancelEdit() {
+  if (!state.editing) return;
+
+  if (state.dirty) {
+    const ok = await showConfirm({
+      title: '放弃这些修改？',
+      text: '这段修改还没有保存，放弃之后就找不回来了。',
+      okText: '放弃修改',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+
+  el.codeEditor.value = state.savedCode;
+  state.code = state.savedCode;
+  state.editing = false;
+  setDirty(false);
+  el.codeDropzone.classList.remove('is-editing');
+
+  // 回到高亮的只读视图
+  renderCode(el.codeContent, state.code, state.language);
+  applyCodeVisibility();
+  toast('已放弃修改', 'info');
+}
+
+/**
+ * 保存编辑内容。
+ *
+ * 两种落点（见本节的说明），失败时**保持编辑模式**——
+ * 学生写了半天的东西不能因为一次网络错误就没了。
+ */
+async function saveEdit() {
+  if (!state.editing) return;
+
+  const code = el.codeEditor.value;
+  state.code = code;
+
+  // ---- 情况 1：这是项目库里的文件，真的写回磁盘 ----
+  if (state.libraryTarget && state.allowWrite) {
+    const payload = {
+      path: state.libraryTarget.relPath,
+      root: state.libraryTarget.root || null,
+      code,
+    };
+    // 带上传入打开时的指纹：文件若被别处改过，后端会返回 409 拦下来
+    if (state.libraryTarget.sha256) payload.expected_sha256 = state.libraryTarget.sha256;
+
+    el.codeSaveBtn.disabled = true;
+    try {
+      const data = await api('/file', {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json' },
+      }, LIBRARY_BASE);
+
+      // 更新乐观锁基准：下一次保存要跟"这次写进去的内容"比
+      state.libraryTarget.sha256 = data.sha256 || '';
+      state.savedCode = code;
+      state.editing = false;
+      setDirty(false);
+      el.codeDropzone.classList.remove('is-editing');
+
+      renderCode(el.codeContent, code, state.language);
+      applyCodeVisibility();
+
+      // 原文件不是 UTF-8（例如 Windows 记事本存的 GBK）时如实说明：
+      // 保存会统一写成 UTF-8，中文不会乱，但别的程序看到的编码变了。
+      const sourceEncoding = state.libraryTarget.encoding || 'utf-8';
+      const encodingNote = sourceEncoding.startsWith('utf-8')
+        ? ''
+        : `（原文件是 ${sourceEncoding} 编码，已按 UTF-8 保存，中文不会丢）`;
+      toast((data.message || '已保存') + encodingNote, 'ok');
+
+      await refreshAfterWrite();
+      return;
+    } catch (err) {
+      // 409 的提示语本身已经把"怎么办"说清楚了（重新打开文件再改），原样透出
+      toast(err.message, 'error');
+      return;    // 保持编辑模式，别把内容弄丢
+    } finally {
+      el.codeSaveBtn.disabled = false;
+    }
+  }
+
+  // ---- 情况 2：只是预览的代码（拖进来 / 粘贴），没有对应文件 ----
+  state.savedCode = code;
+  state.editing = false;
+  setDirty(false);
+  el.codeDropzone.classList.remove('is-editing');
+  renderCode(el.codeContent, code, state.language);
+  applyCodeVisibility();
+  toast('已更新预览（这段代码不在项目库里，没有写进任何文件）', 'info');
+
+  // 行数/函数个数这些要跟着变，重新分析一次
+  try {
+    await analyzeCurrent();
+    renderCode(el.codeContent, code, state.language);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+/** 保存/删除后统一刷新：项目库列表 + 分类结果卡片 */
+async function refreshAfterWrite() {
+  await loadLibrary();
+  try {
+    await analyzeCurrent();
+    renderCode(el.codeContent, state.code, state.language);
+  } catch (err) {
+    console.warn('保存后重新分析失败：', err);
+  }
 }
 
 /**
@@ -1200,92 +1403,6 @@ function onEditorKeydown(event) {
 }
 
 /** 绑定编辑器的输入与快捷键 */
-/** 进入编辑模式：把只读高亮视图换成可编辑的 textarea */
-function startEdit() {
-  if (!state.hasCode) {
-    toast('先放一段代码进来再编辑', 'info');
-    return;
-  }
-
-  state.savedCode = state.code;
-  el.codeEditor.value = state.code;
-  state.editing = true;
-  setDirty(false);
-  el.codeDropzone.classList.add('is-editing');
-  applyCodeVisibility();
-  syncEditorGutter();
-
-  if (typeof el.codeEditor.focus === 'function') el.codeEditor.focus();
-}
-
-/** 放弃修改：有未保存内容时先确认，避免手一滑丢掉刚写的东西 */
-async function cancelEdit() {
-  if (!state.editing) return;
-
-  if (state.dirty) {
-    const ok = await showConfirm({
-      title: '放弃这些修改？',
-      text: '这段修改还没有保存，放弃之后就找不回来了。',
-      okText: '放弃修改',
-      danger: true,
-    });
-    if (!ok) return;
-  }
-
-  el.codeEditor.value = state.savedCode;
-  state.code = state.savedCode;
-  state.editing = false;
-  setDirty(false);
-  el.codeDropzone.classList.remove('is-editing');
-
-  // 回到高亮的只读视图
-  renderCode(el.codeContent, state.code, state.language);
-  applyCodeVisibility();
-  toast('已放弃修改', 'info');
-}
-
-/**
- * 保存编辑。
- *
- * 这里**不写任何文件**：学生端最终形态是"拖入或粘贴代码 → 交给 AI"，
- * 服务端不再维护一份作业文件库。保存只是把预览里的代码换成改后的版本，
- * 并重新跑一次本地分析（行数、函数个数要跟着变）。
- * 提示语必须说清"没有写进文件"，否则学生会以为自己改的是磁盘上的作业。
- */
-async function saveEdit() {
-  if (!state.editing) return;
-
-  const code = el.codeEditor.value;
-  state.code = code;
-  state.savedCode = code;
-  state.editing = false;
-  setDirty(false);
-  el.codeDropzone.classList.remove('is-editing');
-  renderCode(el.codeContent, code, state.language);
-  applyCodeVisibility();
-  toast('已更新预览（没有写进任何文件）', 'info');
-
-  // 行数 / 函数个数这些要跟着变，重新分析一次
-  try {
-    await analyzeCurrent();
-    renderCode(el.codeContent, code, state.language);
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-/** 编辑按钮 / 未保存标记的显隐 */
-function refreshEditButtons() {
-  el.codeEditBtn.hidden = state.editing;
-  el.codeSaveBtn.hidden = !state.editing;
-  el.codeCancelBtn.hidden = !state.editing;
-  el.codeEditBtn.disabled = !state.hasCode;
-  el.codeEditBtn.title = '在线编辑这段代码';
-
-  // 未保存标记：只有真的改过内容才显示，否则"进去又出来"也会闪一个警告，很吵
-  el.codeDirtyBadge.classList.toggle('hidden', !state.editing || !state.dirty);
-}
-
 function bindEditor() {
   el.codeEditor.addEventListener('input', onEditorInput);
   el.codeEditor.addEventListener('keydown', onEditorKeydown);
@@ -1315,10 +1432,27 @@ async function analyzeCurrent() {
   el.codeLangBadge.textContent = data.language_label;
   el.codeLangBadge.hidden = false;
 
-  // ---- 代码规模小结（原来是侧栏「自动分类结果」卡片）----
-  el.codeStat.textContent =
-    `${data.line_count} 行 · ${data.symbols.length} 个函数 / 类`;
-  el.codeStat.hidden = false;
+  // ---- 渲染分类结果卡片 ----
+  el.classifyList.innerHTML = [
+    ['文件', escapeHtml(data.filename)],
+    ['语言', `${escapeHtml(data.language_label)}（${escapeHtml(data.language)}）`],
+    ['行数', data.line_count],
+    ['字符', data.char_count],
+    ['函数 / 类', data.symbols.length],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  el.classifyCard.hidden = false;
+
+  // ---- 渲染代码结构清单 ----
+  if (data.symbols.length) {
+    el.structureList.innerHTML = data.symbols.map((s) => `
+      <li>
+        <code>${escapeHtml(s.qualified_name)}</code>
+        <span>${escapeHtml(s.kind)} · L${s.start_line}-${s.end_line}</span>
+      </li>`).join('');
+    el.structureBox.hidden = false;
+  } else {
+    el.structureBox.hidden = true;
+  }
 
   // ---- 把后端的提示（例如语法错误、语言不支持）转达给学生 ----
   (data.notes || []).forEach((note) => toast(note, 'info'));
@@ -1339,6 +1473,9 @@ async function analyzeCurrent() {
  * @param {string} filename 文件名（决定语言识别）
  * @param {string} code     代码内容
  * @param {object} [options]
+ * @param {{relPath: string, root: string, sha256?: string}} [options.library]
+ *        这段代码来自项目库里的哪个文件。传了它，「保存」才会真的写回磁盘；
+ *        不传就是"只在预览里"的代码（拖进来的文件、粘贴的代码）。
  */
 async function loadCode(filename, code, options = {}) {
   // 换文件前先确认：当前若有没保存的修改，不能默默丢掉
@@ -1352,6 +1489,7 @@ async function loadCode(filename, code, options = {}) {
   state.filename = filename;
   state.code = code;
   state.savedCode = code;
+  state.libraryTarget = options.library || null;
 
   // 新载入的代码一律从只读视图开始，编辑模式要重新点「编辑」
   state.editing = false;
@@ -1481,9 +1619,6 @@ async function runCheck() {
   } finally {
     setBusy(false);
   }
-
-  // 这一跑会改变能力分与错题本，立刻刷新，学生马上看到变化
-  await refreshAfterAiAction();
 }
 
 /** ---- 5.2 生成注释 ---- */
@@ -1503,9 +1638,6 @@ async function runComment() {
   } finally {
     setBusy(false);
   }
-
-  // 这一跑会改变能力分与错题本，立刻刷新，学生马上看到变化
-  await refreshAfterAiAction();
 }
 
 /** ---- 5.3 自动改错 ---- */
@@ -1549,9 +1681,6 @@ async function runFix() {
   } finally {
     setBusy(false);
   }
-
-  // 这一跑会改变能力分与错题本，立刻刷新，学生马上看到变化
-  await refreshAfterAiAction();
 }
 
 /* ==========================================================================
@@ -1748,9 +1877,8 @@ async function runDiagnose() {
     renderDiagnose(data);
     renderWrongBook(data.wrong_question_book || {}, data);
 
-    // 下半屏的「历史错题明细」要包含刚记进去的这一条；顺带把能力雷达也刷一遍
-    // —— 刚诊断出的错误会改变各维度分数，不刷的话学生看到的是旧分数
-    await refreshAfterAiAction();
+    // 下半屏的「历史错题明细」要包含刚记进去的这一条，所以重新拉一次
+    await loadErrorBook();
 
     const passed = (data.analysis || {}).status === 'success';
     toast(passed ? '诊断完成：这次没有发现错误' : '诊断完成：已记入错题本，看看新题目吧', 'ok');
@@ -2057,24 +2185,6 @@ function syncReportLinks() {
 }
 
 /** 读一次报告汇总，刷新侧边栏上的数字与易错知识点 */
-/**
- * 每次 AI 动作完成后刷新「错题本」与「能力雷达 / 学习报告」。
- *
- * 为什么必须自动刷：诊断完那一项的能力分就变了，但雷达图只在页面初始化
- * 与切换统计区间时才重新拉数据。不刷的话学生看到的还是旧分数，
- * **看不到自己这一步的影响** —— 反馈闭环就断在这里。
- *
- * 两个请求互不依赖，用 Promise.all 并行；失败只记日志不抛 ——
- * 刷新失败不该把"这次分析成功了"变成一次报错糊在学生脸上。
- */
-async function refreshAfterAiAction() {
-  try {
-    await Promise.all([loadErrorBook(), loadReport()]);
-  } catch (err) {
-    console.warn('刷新错题本 / 学习报告失败：', err);
-  }
-}
-
 async function loadReport() {
   if (!el.reportCard) return;
   syncReportLinks();
@@ -2465,6 +2575,213 @@ function formatSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+/** 渲染语言筛选按钮：全部 + 各语言（带文件数） */
+function renderLibraryChips(counts, labels, total) {
+  const items = [['', '全部', total]].concat(
+    Object.keys(counts).map((name) => [name, labels[name] || name, counts[name]])
+  );
+
+  el.libraryChips.innerHTML = items.map(([value, label, count]) => `
+    <button class="chip${value === state.libraryFilter ? ' is-active' : ''}"
+            data-lang="${escapeHtml(value)}">
+      ${escapeHtml(label)} <span class="chip__count">${count}</span>
+    </button>`).join('');
+}
+
+/** 渲染文件列表 */
+function renderLibraryFiles(files) {
+  if (!files.length) {
+    el.libraryList.innerHTML =
+      '<li class="files__empty">这个文件夹里还没有找到代码文件</li>';
+    return;
+  }
+
+  el.libraryList.innerHTML = files.map((file) => {
+    // 行数未知（文件过大）时不编数字，老实显示提示
+    const meta = file.too_large
+      ? `${formatSize(file.size_bytes)} · 文件过大，未统计行数`
+      : `${file.line_count} 行 · ${formatSize(file.size_bytes)}`;
+
+    // 只读模式（LIBRARY__ALLOW_WRITE=false）下干脆不渲染这两个按钮，
+    // 而不是渲染出来再禁用——点了没反应比"根本没有这个入口"更让人困惑。
+    const actions = state.allowWrite
+      ? `<div class="files__actions">
+           <button class="btn btn--mini" type="button" data-act="replace"
+                   title="用本机上的另一个文件覆盖它">替换</button>
+           <button class="btn btn--mini btn--danger" type="button" data-act="delete"
+                   title="删除（默认移到 ${escapeHtml(state.trashDirName)} 目录，可找回）">删除</button>
+         </div>`
+      : '';
+
+    return `
+      <li class="files__item" data-path="${escapeHtml(file.rel_path)}"
+          data-root="${escapeHtml(file.root)}">
+        <div class="files__row">
+          <span class="files__name" title="${escapeHtml(file.rel_path)}">
+            ${escapeHtml(file.filename)}
+          </span>
+          <span class="badge badge--accent">${escapeHtml(file.language_label)}</span>
+        </div>
+        <div class="files__meta">${escapeHtml(meta)}</div>
+        ${actions}
+      </li>`;
+  }).join('');
+}
+
+/**
+ * 渲染「项目库文件夹」这一行（常显）。
+ *
+ * 为什么常显：这是使用中被问得最多的问题——"我的代码到底存在哪个文件夹？"。
+ * 之前只在"一个文件都没扫到"时才提示路径，结果有文件的时候反而看不到关键信息。
+ *
+ * @param {Array<{name: string, path: string, exists: boolean}>} roots /scan 返回的根目录
+ */
+function renderLibraryPath(roots) {
+  state.libraryRoots = roots || [];
+
+  if (!state.libraryRoots.length) {
+    el.libraryPathValue.textContent = '后端还没有配置项目库目录';
+    el.libraryPathValue.title = '后端还没有配置项目库目录';
+    el.libraryPathValue.classList.add('is-missing');
+    return;
+  }
+
+  // 默认只配了一个目录，直接把完整路径显示出来；
+  // 配了多个时显示第一个 + "等 N 个"，完整清单放在 title 里，避免把左侧栏撑爆。
+  const first = state.libraryRoots[0];
+  const extra = state.libraryRoots.length > 1 ? ` 等 ${state.libraryRoots.length} 个文件夹` : '';
+  el.libraryPathValue.textContent = first.path + extra;
+  el.libraryPathValue.title = state.libraryRoots
+    .map((root) => root.path + (root.exists ? '' : '（目录不存在）'))
+    .join('\n');
+
+  // 目录不存在时用醒目的样式标出来：学生据此就知道该去建那个文件夹
+  el.libraryPathValue.classList.toggle('is-missing', !first.exists);
+}
+
+/**
+ * 复制项目库文件夹路径到剪贴板。
+ * 学生拿到路径后可以直接粘到文件资源管理器的地址栏，把作业拖进那个文件夹。
+ */
+async function copyLibraryPath() {
+  const first = state.libraryRoots[0];
+  const text = first ? first.path : '';
+
+  if (!text) {
+    toast('还没读到项目库路径，先点右上角 ↻ 重新扫描', 'info');
+    return;
+  }
+
+  try {
+    // 剪贴板 API 只在安全上下文可用；本地 127.0.0.1 属于安全上下文，正常能用。
+    if (typeof navigator === 'undefined' || !navigator.clipboard) {
+      throw new Error('当前浏览器不支持剪贴板 API');
+    }
+    await navigator.clipboard.writeText(text);
+    toast('路径已复制，可粘到文件资源管理器地址栏打开', 'ok');
+  } catch (err) {
+    // 复制失败不影响主流程：路径本身就显示在旁边，学生手动选中复制即可
+    console.warn('复制项目库路径失败：', err);
+    toast('复制失败，请手动选中路径复制', 'info');
+  }
+}
+
+/**
+ * 扫描本地项目库并渲染。
+ * @param {string} language 语言筛选，'' 表示全部
+ */
+async function loadLibrary(language = state.libraryFilter) {
+  state.libraryFilter = language;
+  el.libraryHint.textContent = '正在扫描本地代码…';
+
+  try {
+    const query = language ? `?language=${encodeURIComponent(language)}` : '';
+    const data = await api('/scan' + query, {}, LIBRARY_BASE);
+
+    state.libraryFiles = data.files;
+    // 后端是否允许写入：决定列表里显不显示「替换 / 删除」，以及「编辑」能不能点
+    state.allowWrite = data.allow_write !== false;
+    if (data.trash_dir_name) state.trashDirName = data.trash_dir_name;
+
+    renderLibraryChips(data.language_counts, data.language_labels, data.total_files);
+    renderLibraryFiles(data.files);
+    renderLibraryReadOnlyHint();
+    refreshEditButtons();
+
+    // 常显的文件夹路径：无论扫到几个文件都要告诉学生代码放在哪
+    const roots = data.roots || [];
+    renderLibraryPath(roots);
+
+    // 提示文字告诉学生代码是从哪个文件夹扫出来的，方便ta们把新作业放进去
+    const missing = roots.filter((root) => !root.exists);
+    if (data.total_files) {
+      el.libraryHint.textContent =
+        `共 ${data.total_files} 个文件 · ${data.total_lines} 行` +
+        (roots.length ? ` · 来自 ${roots.map((r) => r.name).join('、')}` : '');
+    } else if (language) {
+      // 筛没了：不是文件夹空，而是这个语言下没有文件
+      el.libraryHint.textContent = '这个语言下暂时没有文件，点「全部」看看其它的';
+    } else {
+      // 路径已经常显在上面那一行里了，这里只要指个方向，不必再重复一遍长路径
+      el.libraryHint.textContent =
+        '还没有找到代码文件。把你写的 .c / .java / .py 放进上面那个文件夹，再点右上角 ↻';
+    }
+
+    // 有些配置的文件夹不存在时明确提示，而不是让列表莫名其妙为空
+    if (missing.length) {
+      toast(`有 ${missing.length} 个项目库目录不存在：${missing[0].path}`, 'info');
+    }
+    if (data.truncated) {
+      el.libraryMore.textContent = `文件太多，只列出了前 ${data.files.length} 个`;
+      el.libraryMore.hidden = false;
+    } else {
+      el.libraryMore.hidden = true;
+    }
+  } catch (err) {
+    el.libraryHint.textContent = '项目库不可用';
+    el.libraryList.innerHTML =
+      `<li class="files__empty">读取失败：${escapeHtml(err.message)}</li>`;
+  }
+}
+
+/**
+ * 打开项目库里的一个文件：读内容 -> 载入代码区 -> 自动分析。
+ *
+ * 注意把 rel_path / sha256 一起交给 loadCode：前者告诉「保存」写回哪个文件，
+ * 后者是乐观锁基准——别人（或学生自己在记事本里）改过这个文件时，
+ * 保存会被后端用 409 拦下，而不是默默覆盖。
+ *
+ * @param {string} relPath 相对项目库根目录的路径
+ * @param {string} root    根目录标识
+ */
+async function openLibraryFile(relPath, root) {
+  el.libraryHint.textContent = `正在读取 ${relPath} …`;
+  try {
+    const params = new URLSearchParams({ path: relPath });
+    if (root) params.append('root', root);
+    const data = await api('/file?' + params.toString(), {}, LIBRARY_BASE);
+
+    // 用相对路径作为文件名，历史记录里就能看出这份作业来自哪个文件夹
+    await loadCode(data.rel_path, data.code, {
+      library: {
+        relPath: data.rel_path,
+        root: root || '',
+        sha256: data.sha256 || '',
+        // 记下原编码：保存时统一写成 UTF-8，如果原来是 GBK 要如实告诉学生
+        encoding: data.encoding || 'utf-8',
+      },
+    });
+
+    if (data.replaced) {
+      toast('这个文件里有些字符无法识别，已用替代字符显示', 'info');
+    }
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    await loadLibrary();
+  }
+}
+
 /* --------------------------------------------------------------------------
    6.3 替换 / 删除
    --------------------------------------------------------------------------
@@ -2474,8 +2791,176 @@ function formatSize(bytes) {
         以及"去哪能把文件找回来"。
    -------------------------------------------------------------------------- */
 
+/** 项目库只读时的说明条（只读就明确写出来，别让学生以为是按钮坏了） */
+function renderLibraryReadOnlyHint() {
+  const hint = document.getElementById('libraryReadOnlyHint');
+  if (!hint) return;
+  hint.classList.toggle('hidden', state.allowWrite);
+  hint.textContent = state.allowWrite
+    ? ''
+    : '项目库当前是只读模式（LIBRARY__ALLOW_WRITE=false）：'
+      + '可以浏览、可以用 AI 分析，但不能编辑 / 替换 / 删除文件。';
+}
+
+/** 从列表项里取出对应的文件对象（按钮上不会带全部字段，回查一次最稳） */
+function findLibraryFile(relPath) {
+  return state.libraryFiles.find((item) => item.rel_path === relPath) || null;
+}
+
+/**
+ * 点「替换」：记下目标文件并唤起本机文件选择框。
+ *
+ * 替换的语义是"用本机另一个文件的内容，覆盖项目库里这个文件"，
+ * 文件名与位置都不变——所以下面要校验扩展名一致，避免出现
+ * `linked_list.c` 里装着 Python 代码这种让语言识别错乱的情况。
+ */
+function requestReplace(target) {
+  if (!state.allowWrite) {
+    toast('项目库当前是只读模式，不能替换文件', 'info');
+    return;
+  }
+  state.replaceTarget = target;
+  // 清空 value：连续两次选同一个文件时，不清空就不会再触发 change 事件
+  el.replaceInput.value = '';
+  el.replaceInput.click();
+}
+
+/**
+ * 学生选完本机文件后的处理：校验 → 确认 → PUT 覆盖。
+ * @param {HTMLInputElement} input 隐藏的文件选择框
+ */
+async function performReplace(input) {
+  const chosen = input.files && input.files[0];
+  const target = state.replaceTarget;
+  state.replaceTarget = null;          // 用完就清，避免下次误用到旧目标
+  if (!chosen || !target) return;
+
+  const targetExt = fileExtension(target.filename || target.rel_path);
+  const chosenExt = fileExtension(chosen.name);
+  if (targetExt !== chosenExt) {
+    toast(
+      `替换要选同类型文件：${target.rel_path} 需要 ${targetExt || '同扩展名'} 文件，`
+      + `你选的是 ${chosenExt || '无扩展名'} 文件；新增文件请拖到上面的虚线框里`,
+      'error',
+    );
+    return;
+  }
+
+  let text = '';
+  try {
+    text = await chosen.text();
+  } catch (err) {
+    toast('读取本机文件失败：' + err.message, 'error');
+    return;
+  }
+
+  const ok = await showConfirm({
+    title: '替换这个文件？',
+    text: `原文件：<code>${escapeHtml(target.rel_path)}</code><br>`
+      + `新内容来自：<code>${escapeHtml(chosen.name)}</code>（${formatSize(chosen.size)}）<br>`
+      + '替换后原内容会被覆盖，且无法从回收站找回。',
+    okText: '替换',
+    danger: true,
+  });
+  if (!ok) return;
+
+  const payload = { path: target.rel_path, root: target.root || null, code: text };
+  // 如果这个文件正好是当前打开的那一个，带上乐观锁基准，防止盖掉别处的改动
+  if (state.libraryTarget && state.libraryTarget.relPath === target.rel_path
+      && state.libraryTarget.sha256) {
+    payload.expected_sha256 = state.libraryTarget.sha256;
+  }
+
+  try {
+    const data = await api('/file', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+    }, LIBRARY_BASE);
+    toast(`已用 ${chosen.name} 替换 ${data.rel_path}`, 'ok');
+    await loadLibrary();
+
+    // 替换的正是当前预览的文件 → 重新读一遍，否则屏幕上还是旧内容
+    if (state.libraryTarget && state.libraryTarget.relPath === target.rel_path) {
+      await openLibraryFile(target.rel_path, target.root);
+    }
+  } catch (err) {
+    toast('替换失败：' + err.message, 'error');
+  }
+}
+
+/**
+ * 点「删除」：二次确认 → DELETE。
+ *
+ * 默认是"移进回收站"而不是真删，所以确认文案里要讲清楚两件事：
+ * 文件去哪了、怎么找回来。彻底删除需要学生自己去 .trash 里删，
+ * 页面上不提供——少一个"一键永久删除"的入口，就少一批误删的作业。
+ */
+async function requestDelete(target) {
+  if (!state.allowWrite) {
+    toast('项目库当前是只读模式，不能删除文件', 'info');
+    return;
+  }
+
+  const ok = await showConfirm({
+    title: '删除这个文件？',
+    text: `要删除的是：<code>${escapeHtml(target.rel_path)}</code>（${formatSize(target.size_bytes)}）<br>`
+      + `删除后会移到项目库文件夹里的 <code>${escapeHtml(state.trashDirName)}</code> 目录，`
+      + '需要时还能自己找回来。',
+    okText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+
+  const params = new URLSearchParams({ path: target.rel_path });
+  if (target.root) params.append('root', target.root);
+
+  try {
+    const data = await api('/file?' + params.toString(), { method: 'DELETE' }, LIBRARY_BASE);
+    toast(data.message || '已删除', 'ok');
+
+    // 删掉的正好是当前预览的文件 → 顺手清空代码区，
+    // 否则屏幕上还留着一个已经不存在的文件，再点保存就会报错
+    if (state.libraryTarget && state.libraryTarget.relPath === target.rel_path) {
+      clearCode({ silent: true });
+    }
+    await loadLibrary();
+  } catch (err) {
+    toast('删除失败：' + err.message, 'error');
+  }
+}
+
+/**
+ * 项目库列表的点击总入口（事件委托）。
+ *
+ * 顺序很重要：**先判断点的是不是「替换 / 删除」按钮**，是就执行动作并返回；
+ * 否则才当成"打开这个文件"。反过来的话，点删除会先弹出一遍文件内容。
+ */
+function onLibraryListClick(event) {
+  const actionBtn = event.target.closest('[data-act]');
+  if (actionBtn) {
+    const row = actionBtn.closest('.files__item');
+    if (!row) return;
+    const relPath = row.dataset.path;
+    const target = findLibraryFile(relPath) || {
+      rel_path: relPath,
+      root: row.dataset.root || '',
+      filename: relPath,
+      size_bytes: 0,
+    };
+    if (actionBtn.dataset.act === 'replace') requestReplace(target);
+    else if (actionBtn.dataset.act === 'delete') requestDelete(target);
+    return;
+  }
+
+  const item = event.target.closest('.files__item');
+  if (item) openLibraryFile(item.dataset.path, item.dataset.root);
+}
+
 /** 绑定「替换」文件选择框与确认弹窗（弹窗是全局的，只绑一次） */
 function bindFileActions() {
+  el.replaceInput.addEventListener('change', () => performReplace(el.replaceInput));
+
   el.confirmOkBtn.addEventListener('click', () => closeConfirm(true));
   el.confirmCancelBtn.addEventListener('click', () => closeConfirm(false));
   // 点遮罩也算取消：这是所有弹窗的通用直觉
@@ -3170,7 +3655,6 @@ function bindDropzone() {
   bindDropTarget(el.dropzone, uploadFile);
 }
 
-/** 绑定「① 选择你的代码」上传区：点击选择文件 + 拖拽放入（只预览） */
 /** 绑定「③ 代码预览区」：拖进来只预览，**不触发入库**（需求二第 2 条） */
 function bindCodeDropzone() {
   bindDropTarget(el.codeDropzone, uploadFile);
@@ -3203,6 +3687,112 @@ async function uploadFile(file) {
 
 /* ---------- 需求二：拖进「② 本地项目库」= 入库 ---------- */
 
+/** 允许入库的扩展名（与后端保持一致；前端先拦一道，提示更即时） */
+const ARCHIVABLE_SUFFIXES = ['.c', '.h', '.java', '.py'];
+
+/**
+ * 判断文件名的扩展名是否允许入库。
+ * @param {string} name 文件名
+ * @returns {boolean}
+ */
+function isArchivable(name) {
+  const lowered = String(name || '').toLowerCase();
+  return ARCHIVABLE_SUFFIXES.some((suffix) => lowered.endsWith(suffix));
+}
+
+/**
+ * 把文件加入本地项目库（需求二第 1 条）。
+ *
+ * 完整流程（每一步失败都有明确提示，不让学生猜）：
+ *   1. 前端先做两道快速检查：扩展名是否支持、项目库里是否已有同名文件；
+ *   2. POST /files/upload 把文件存到服务器的代码文件夹
+ *      —— 后端还会按「同名 + 内容相同」再判一次重复，重复时返回 409；
+ *   3. POST /files/scan 让后端按语言归档（.py → python/、.c/.h → c/、.java → java/），
+ *      并把文件名/语言/路径/大小/入库时间写进 SQLite 台账；
+ *   4. 刷新左侧项目库列表（GET /files/list）与语言筛选按钮；
+ *   5. 同时把代码显示到中间预览区，并更新「③ 自动分类结果」。
+ *
+ * @param {File} file 拖入的文件
+ */
+async function addToLibrary(file) {
+  // ---- 1a. 扩展名检查：不支持的文件早点说，不要白白上传一遍 ----
+  if (!isArchivable(file.name)) {
+    toast(`只支持 ${ARCHIVABLE_SUFFIXES.join(' / ')} 文件，${file.name} 不在范围内`, 'error');
+    return;
+  }
+
+  // ---- 1b. 前端去重：项目库里已经有同名文件就先提示 ----
+  //（真正的判重以后端为准——同名但内容不同的文件后端会另存为新名字，
+  //  所以这里只做"同名就提醒一下"，不直接拦截）
+  const sameName = state.libraryFiles.find((item) => item.filename === file.name);
+
+  try {
+    // ---- 2. 上传到服务器 ----
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const uploaded = await api('/upload', { method: 'POST', body: form }, FILES_BASE);
+
+    // ---- 3. 按语言归档 + 写台账 ----
+    const scanned = await api('/scan', { method: 'POST', body: JSON.stringify({}) ,
+      headers: { 'Content-Type': 'application/json' } }, FILES_BASE);
+
+    // 提示语分层：有重名 → 说清"已存在/已改名"；否则报归档结果
+    if (uploaded.renamed) {
+      toast(`项目库里已有同名文件，已另存为 ${uploaded.filename}`, 'info');
+    } else if (sameName) {
+      toast(`文件已存在：${sameName.rel_path}（已是最新）`, 'info');
+    } else {
+      toast(`${uploaded.filename} 已加入项目库，本次共归档 ${scanned.moved} 个文件`, 'ok');
+    }
+
+    // ---- 4. 刷新项目库列表 ----
+    await loadLibrary();
+
+    // ---- 5. 同时显示代码并更新「自动分类结果」----
+    // 顺带把"这份代码对应项目库里的哪个文件"记下来：这样学生拖进来之后
+    // 直接点「编辑」改两下再「保存」，就能写回磁盘，中间不用再点一次列表。
+    const text = await file.text();
+    if (text.trim()) {
+      await loadCode(uploaded.filename, text, {
+        library: libraryTargetForArchive(scanned, uploaded),
+      });
+    }
+  } catch (err) {
+    // 后端对"文件已存在"返回 409，detail 是「文件已存在：<路径>」
+    if (String(err.message).includes('文件已存在')) {
+      toast(err.message, 'info');
+      return;
+    }
+    toast('加入项目库失败：' + err.message, 'error');
+  }
+}
+
+/**
+ * 归档完成后，找出这份文件在**项目库列表**里的位置，作为可保存的目标。
+ *
+ * 为什么要绕这一下：上传落在 `CLASSIFIER__ROOT` 下，而项目库列表来自
+ * `LIBRARY__ROOTS`。默认两者是同一个目录（见 config.py 的说明），
+ * 但配置成不同目录时，归档路径就不在项目库里，这时**不能**声称可以保存——
+ * 否则学生点保存只会拿到"文件不存在"的报错。
+ *
+ * @returns {{relPath: string, root: string, sha256: string}|null}
+ */
+function libraryTargetForArchive(scanned, uploaded) {
+  const archived = (scanned.files || []).find(
+    (item) => item.filename === uploaded.filename || item.target_path === uploaded.rel_path
+  );
+  const relPath = archived ? archived.target_path : uploaded.rel_path;
+  const inLibrary = state.libraryFiles.some((item) => item.rel_path === relPath);
+  if (!inLibrary) return null;
+  const rootName = (state.libraryRoots[0] && state.libraryRoots[0].name) || '';
+  return { relPath, root: rootName, sha256: '' };
+}
+
+/** 绑定「② 本地项目库」的拖拽区（拖进来 = 入库） */
+function bindLibraryDropzone() {
+  bindDropTarget(el.libraryDropzone, addToLibrary);
+}
+
 /** 绑定所有按钮 */
 function bindActions() {
   el.btnCheck.addEventListener('click', runCheck);
@@ -3214,6 +3804,26 @@ function bindActions() {
   el.refreshWrongBook.addEventListener('click', loadErrorBook);
   // 一键恢复默认布局（拖乱了 / 换了台显示器之后不用自己慢慢调回来）
   el.resetLayout.addEventListener('click', resetLayout);
+
+  // ---- 本地项目库 ----
+  // 重新扫描：学生把新作业拖进文件夹后点一下就刷新了
+  el.refreshLibrary.addEventListener('click', () => loadLibrary());
+
+  // 复制项目库文件夹路径：粘到文件资源管理器地址栏就能直接打开那个文件夹
+  el.copyLibraryPath.addEventListener('click', copyLibraryPath);
+
+  // 语言筛选按钮是动态生成的，用事件委托绑定
+  el.libraryChips.addEventListener('click', (event) => {
+    const chip = event.target.closest('.chip');
+    if (!chip) return;
+    // 再点一次已选中的按钮就取消筛选，回到全部
+    const next = chip.dataset.lang === state.libraryFilter ? '' : chip.dataset.lang;
+    loadLibrary(next);
+  });
+
+  // 文件列表用事件委托：列表项是动态生成的，逐个绑定会随刷新丢失。
+  // 点击的总入口在 onLibraryListClick 里——它会先判断点的是不是「替换 / 删除」。
+  el.libraryList.addEventListener('click', onLibraryListClick);
 
   // 粘贴代码（左侧折叠区）：直接用文本调用分析流程
   el.pasteBtn.addEventListener('click', async () => {
@@ -3241,6 +3851,22 @@ function bindActions() {
  *      抢过来会让他输不进去（判断 event.target.tagName）；
  *   2. 只在剪贴板里是**文本**时处理，复制文件时的 files 不归这里管。
  */
+function bindPasteToCodePane() {
+  document.addEventListener('paste', async (event) => {
+    const tag = (event.target && event.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;   // 别抢输入框里的粘贴
+
+    const text = event.clipboardData && event.clipboardData.getData('text');
+    if (!text || !text.trim()) return;
+
+    event.preventDefault();
+    // 粘贴的内容没有文件名，给个默认名让后端能识别语言（默认按 Python 处理）
+    const name = guessNameFromPaste(text);
+    await loadCode(name, text);
+    toast(`已载入粘贴的代码（${name}）`, 'ok');
+  });
+}
+
 /**
  * 猜一个文件名给粘贴进来的代码用。
  *
@@ -3262,22 +3888,6 @@ function guessNameFromPaste(text) {
   return 'pasted.py';
 }
 
-function bindPasteToCodePane() {
-  document.addEventListener('paste', async (event) => {
-    const tag = (event.target && event.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;   // 别抢输入框里的粘贴
-
-    const text = event.clipboardData && event.clipboardData.getData('text');
-    if (!text || !text.trim()) return;
-
-    event.preventDefault();
-    // 粘贴的内容没有文件名，给个默认名让后端能识别语言（默认按 Python 处理）
-    const name = guessNameFromPaste(text);
-    await loadCode(name, text);
-    toast(`已载入粘贴的代码（${name}）`, 'ok');
-  });
-}
-
 /** 页面入口 */
 async function init() {
   // ---- 四根分隔条：拖动改面板尺寸（需求三）----
@@ -3286,6 +3896,7 @@ async function init() {
 
   // ---- 三个拖拽区各绑各的（语义不同，见「10. 三个拖拽区」的说明）----
   bindDropzone();          // A：① 选择你的代码 —— 只预览
+  bindLibraryDropzone();   // B：② 本地项目库   —— 入库 + 归档 + 刷新列表
   bindCodeDropzone();      // C：③ 代码预览区   —— 只预览
   bindPasteToCodePane();   // 直接往中间区域粘贴代码
 
@@ -3316,7 +3927,7 @@ async function init() {
   // 刷新页面后应该立刻能看到自己的错题，而不是一片空白。
   // loadReport 同理：使用时长与错题统计一进页面就该有数。
   await Promise.all([
-    loadStatus(), loadModels(), loadErrorBook(), loadReport(),
+    loadStatus(), loadLibrary(''), loadModels(), loadErrorBook(), loadReport(),
   ]);
 }
 

@@ -9,7 +9,7 @@ import pytest
 
 from app.core.config import PROJECT_ROOT, Settings, get_settings
 
-ENV_PREFIXES = ("APP__", "DATABASE__", "LLM__", "TRACING__", "SECURITY__")
+ENV_PREFIXES = ("APP__", "DATABASE__", "LLM__", "TRACING__", "LIBRARY__", "CLASSIFIER__")
 
 
 @pytest.fixture()
@@ -26,23 +26,22 @@ def test_defaults_load_without_env(clean_env: None) -> None:
     assert settings.app.name == "ai-code-tutor-agent"
     assert settings.app.api_v1_prefix == "/api/v1"
     assert settings.database.url.startswith("sqlite+aiosqlite:///")
-    # 默认不开 CORS 通配、默认不信任网页传的 Key（安全默认值）
-    assert settings.security.allow_client_key is True
-    assert settings.app.trace_header
+    # 默认打开项目库写入：学生要能在页面上改作业
+    assert settings.library.allow_write is True
 
 
 def test_nested_env_override(clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db_path = tmp_path / "custom.db"
     monkeypatch.setenv("DATABASE__SQLITE_PATH", str(db_path))
     monkeypatch.setenv("LLM__MODEL", "qwen2.5-coder")
-    monkeypatch.setenv("SECURITY__ALLOW_CLIENT_KEY", "false")
+    monkeypatch.setenv("LIBRARY__ALLOW_WRITE", "false")
 
     settings = Settings(_env_file=None)
 
     assert settings.database.sqlite_path == db_path
     assert db_path.as_posix() in settings.database.url
     assert settings.llm.model == "qwen2.5-coder"
-    assert settings.security.allow_client_key is False
+    assert settings.library.allow_write is False
 
 
 def test_api_key_is_secret(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,17 +67,21 @@ def test_url_override_takes_precedence(clean_env: None, monkeypatch: pytest.Monk
 
 
 def test_directories_are_created(clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """启动时要把数据库所在目录建出来，否则第一次用会莫名其妙失败。
-
-    学生端不落盘存作业，所以这里只剩数据库一个目录 ——
-    原来还要建项目库与 c/java/python 三个归档目录，那套功能已删除。
-    """
+    """启动时要把学生要用的"收纳盒"目录建出来，否则第一次用会莫名其妙失败。"""
     monkeypatch.setenv("DATABASE__SQLITE_PATH", str(tmp_path / "nested" / "app.db"))
+    monkeypatch.setenv("LIBRARY__ROOTS", str(tmp_path / "library"))
+    monkeypatch.setenv("CLASSIFIER__ROOT", str(tmp_path / "library"))
 
     settings = Settings(_env_file=None)
     settings.ensure_directories()
 
+    # 数据库所在目录
     assert (tmp_path / "nested").is_dir()
+    # 本地项目库根目录
+    assert (tmp_path / "library").is_dir()
+    # 三个归档目录：学生一看就知道代码会被归到哪
+    for name in ("c", "java", "python"):
+        assert (tmp_path / "library" / name).is_dir()
 
 
 def test_get_settings_is_cached(clean_env: None) -> None:

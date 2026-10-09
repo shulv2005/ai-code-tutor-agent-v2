@@ -139,6 +139,12 @@ def _isolate_runtime_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
     显式覆盖这些变量的夹具（sqlite_path 等）在本夹具之后执行，仍然生效。
     """
     monkeypatch.setenv("DATABASE__SQLITE_PATH", str(tmp_path / "_data" / "app.db"))
+    # 本地项目库：默认根目录是仓库里的 data/library，
+    # 不隔离的话「扫描到 0 个文件」这类断言会随开发者本地放了什么代码而变化。
+    monkeypatch.setenv("LIBRARY__ROOTS", str(tmp_path / "_data" / "library"))
+    # 文件分类器**会真的移动文件**，默认根目录与项目库同为仓库里的 data/library/。
+    # 不隔离的后果最严重：跑一次测试就可能把开发者放在那儿的真实文件搬走。
+    monkeypatch.setenv("CLASSIFIER__ROOT", str(tmp_path / "_data" / "library"))
     # 强制清空 API Key：开发机上 .env 里可能配了真实的付费 Key，
     # 万一某个用例漏了注入假客户端，就会真的发请求出去——既花钱又让结果不可复现。
     # 需要"已配置"状态的用例自己再 setenv 覆盖即可（monkeypatch 在夹具之后执行）。

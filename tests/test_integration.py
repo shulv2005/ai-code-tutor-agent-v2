@@ -28,6 +28,8 @@ EXPECTED_MODULES = {
     "usage": 3,
     # 学习报告：数据 + 导出 Word
     "report": 2,
+    "library": 3,
+    "files": 2,
     "check": 1,
     "fix": 3,
     "comment": 3,
@@ -46,6 +48,8 @@ EXPECTED_TABLES = {
     "code_check_records",
     "code_fix_records",
     "comment_records",
+    # 文件自动分类台账
+    "classified_files",
 }
 
 
@@ -199,9 +203,7 @@ def test_readme_covers_every_module_prefix(spec: dict) -> None:
 
 @pytest.mark.parametrize(
     "section",
-    # 「如何添加学生代码」原指拖拽入库与归档那套流程；项目库删除后
-    # 这一章改成讲"拖入 / 选择文件 / 粘贴"三条入口，标题随之调整。
-    ["项目功能", "一键启动", "如何使用 HTML 界面", "学生怎么把代码放进来", "AI 功能的原理"],
+    ["项目功能", "一键启动", "如何使用 HTML 界面", "如何添加学生代码", "AI 功能的原理"],
 )
 def test_readme_has_required_sections(section: str) -> None:
     """需求点名的章节一个都不能少。"""

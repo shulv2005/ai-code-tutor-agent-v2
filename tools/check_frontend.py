@@ -24,7 +24,7 @@ PAGES = [
         "html": BASE / "frontend" / "index.html",
         "js": BASE / "frontend" / "js" / "app.js",
         "css": BASE / "frontend" / "css" / "style.css",
-        "bases": ("/api/v1/tutor", "/api/v1/report", "/api/v1/usage"),
+        "bases": ("/api/v1/tutor", "/api/v1/library", "/api/v1/files"),
     },
 ]
 

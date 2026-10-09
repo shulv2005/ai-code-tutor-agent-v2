@@ -326,7 +326,22 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 .dropzone__text { margin: 6px 0 2px; font-size: 13px; }
 .dropzone__hint { margin: 0; font-size: 11px; color: var(--text-faint); }
 
+/* ---------- 5.1.1 项目库专用拖拽区（拖进来 = 入库）----------
+   与上面「① 选择你的代码」的区别必须让学生一眼看出来：
+   那个是"打开看看"，这个是"交作业"。
+   所以这里用**实线边框 + 强调色文字**，与浅色的预览拖拽区区分开。 */
+.dropzone--library {
+  padding: 14px 12px;
+  margin-bottom: 8px;
+  border-style: dashed;             /* 仍是虚线：明确"这里可以拖东西进来" */
+  border-color: var(--accent);
+  background: #fff;
+}
 
+.dropzone--library .dropzone__text {
+  font-weight: 600;
+  color: var(--accent);
+}
 
 /* 分类结果区用白色底，让"入库"这个动作看起来更"正式"一点 */
 
@@ -415,37 +430,206 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 
 .textarea { resize: vertical; line-height: 1.5; }
 
-
-
-
-
-
-
-/* ---------- 5.6 本地项目库 ---------- */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-@media (hover: none) {
+/* ---------- 5.3 键值列表（分类结果） ---------- */
+.kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 12px;
+  font-size: 13px;
 }
 
+.kv dt { color: var(--text-dim); }
+.kv dd { margin: 0; font-weight: 600; }
 
+/* ---------- 5.4 代码结构列表 ---------- */
+.structure summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+
+.structure__list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.structure__list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.structure__list code { font-family: var(--mono); color: var(--text); }
+.structure__list span { color: var(--text-faint); white-space: nowrap; }
+
+/* ---------- 5.6 本地项目库 ---------- */
+/*
+  项目库文件夹路径（常显行）：
+  左侧栏只有 300px 左右，而 Windows 路径往往长得多，所以分成两行显示：
+    第 1 行：标签「项目库文件夹」+ 复制按钮
+    第 2 行：完整路径（等宽字体，太长时用省略号截断，完整值放在 title 里）
+  之所以让路径独占一行：挤在一行里会被按钮吃掉一大半宽度，
+  学生看到的往往是 `D:\桌面\开…` 这种没用的残片。
+*/
+.library__path {
+  display: flex;
+  flex-wrap: wrap;                  /* 允许路径换到第二行 */
+  align-items: center;
+  gap: 4px 6px;
+  margin: 0 0 6px;
+  padding: 5px 7px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: #fafbfc;
+  font-size: 11px;
+}
+
+.library__path-label {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.library__path-value {
+  /* order 排在按钮之后 + basis 100%：强制换行，让路径独占整行 */
+  order: 3;
+  flex: 1 1 100%;
+  min-width: 0;                     /* 没有它，flex 子项不会收缩，省略号不生效 */
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 路径被截断时的提示色：让"目录不存在"这种异常一眼能看出来 */
+.library__path-value.is-missing {
+  color: var(--warn);
+  font-style: italic;
+}
+
+/* 说明文字：用来告诉学生"代码该放在哪个文件夹"，路径用等宽字体更清楚 */
+.library__hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.library__hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: #f2f5f7;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--text);
+}
+
+/* 语言筛选按钮容器：放不下就换行，不做横向滚动 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 当前选中的筛选项：用主色实心按钮表示，一眼能看出在筛选什么 */
+.chip.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.chip__count {
+  opacity: 0.75;
+  font-size: 11px;
+}
+
+/* 文件列表：最多 260px 高，超出后可滚动，避免把左侧栏撑爆 */
+.files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.files__empty { color: var(--text-faint); font-size: 12px; padding: 8px 0; line-height: 1.6; }
+
+.files__item {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.files__item:hover { background: #f7fafb; border-color: var(--line); }
+
+.files__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.files__name {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files__meta { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+/*
+  每行的「替换 / 删除」按钮：
+  默认隐藏、鼠标悬停（或键盘聚焦）时才出现。左侧栏本来就只有 300px，
+  常显两个按钮会把文件名挤成省略号，反而看不清点的是哪个文件。
+  触摸屏没有 hover，所以用 @media (hover: none) 让它们常显。
+*/
+.files__actions {
+  display: none;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.files__item:hover .files__actions,
+.files__item:focus-within .files__actions { display: flex; }
+
+@media (hover: none) {
+  .files__actions { display: flex; }
+}
+
+/* 项目库被配置成只读时，右上角给一条明确说明，别让学生以为是按钮坏了 */
+.library__readonly {
+  font-size: 11px;
+  color: var(--warn);
+  margin: 0 0 6px;
+  line-height: 1.6;
+}
+
+/* 文件数超上限时的提示 */
+.library__more { font-size: 11px; color: var(--warn); margin: 6px 0 0; }
 
 /* ==========================================================================
    6. 代码展示
@@ -780,46 +964,6 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 }
 
 .actions__hint { font-size: 12px; color: var(--text-faint); }
-
-/* 知识点标签（「⑤ 分析结果」里诊断出的知识点，以及原项目库的语言筛选）
-   注意：这套样式不只服务于项目库 —— 删项目库时曾把它一起删掉，
-   结果诊断结果里的知识点标签全部失去样式（契约检查立刻报出来）。 */
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 8px;
-}
-.chip {
-  font: inherit;
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.chip:hover { border-color: var(--accent); color: var(--accent); }
-/* 当前选中的筛选项：用主色实心按钮表示，一眼能看出在筛选什么 */
-/* ---------- 10.2 静态知识点标签（不是筛选按钮，因此不可点）---------- */
-.chips--static { margin-bottom: 0; }
-.chip--static {
-  cursor: default;
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-  color: var(--accent);
-}
-
-/* 代码区标题栏的规模小结（行数 / 函数类数）：
-   原来是侧栏一张「自动分类结果」卡片，收进标题栏后只要一行浅色小字，
-   既不抢标题的注意力，也省下一张卡片的位置。 */
-.code-stat {
-  font-size: 11.5px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
 
 .badge {
   display: inline-block;
@@ -1419,7 +1563,15 @@ body.is-resizing-col, body.is-resizing-row { user-select: none; }
 /* 归档提示：告诉学生"这次错误已经记进错题本了"，而不是悄悄写库 */
 #diagnoseLogged { margin: 0; }
 
+/* ---------- 10.2 静态知识点标签（不是筛选按钮，因此不可点）---------- */
+.chips--static { margin-bottom: 0; }
 
+.chip--static {
+  cursor: default;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
 
 /* ---------- 10.3 易错知识点（按次数画条形）---------- */
 .weak { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

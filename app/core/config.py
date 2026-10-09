@@ -504,6 +504,182 @@ class TracingSettings(BaseModel):
     memory_buffer_size: int = 1000
 
 
+class LibrarySettings(BaseModel):
+    """本地项目库配置：扫描学生本地文件夹并自动按语言分类。
+
+    安全边界（很重要）：
+    可扫描的目录**只能来自本配置文件**，接口里没有任何参数能指定任意路径。
+    这样即使页面被同学随手改坏、或有人构造恶意请求，也无法读到配置之外的
+    任何文件；配合 `resolve()` 后的一致性校验，`../` 之类的路径穿越也会被拒。
+
+    写入类操作（在线编辑保存 / 替换 / 删除）遵守同一条边界：
+    目标路径同样要 `resolve()` 后确认落在某个根目录之内，而且
+    - 只能改**已存在**的源码文件（新建文件请走「拖进项目库」的入库流程）；
+    - 删除默认是移到根目录下的 `.trash/`，不是抹掉；
+    - 不想要这些能力时，用 `allow_write=False` 一次性关掉。
+    """
+
+    # 要扫描的根目录列表。为空时只用下面的默认目录（data/library）。
+    # 想扫描自己的作业文件夹，在 .env 里写：
+    #   LIBRARY__ROOTS=D:\我的作业, E:\课程代码
+    roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # 默认目录：学生把代码丢进这里就能一键看到，开箱即用
+    default_dir: Path = PROJECT_ROOT / "data" / "library"
+    # 随项目附带的示例作业目录（里面是故意写错的代码，用于第一次体验三个 AI 功能）
+    example_dir: Path = PROJECT_ROOT / "examples"
+    # 是否把示例目录也当作一个项目库来源。
+    # 只在「没有显式配置 roots」时生效：老师配置了自己的作业目录后，
+    # 就不该再混进项目自带的示例，否则每次都要在列表里翻找自己的文件。
+    include_examples: bool = True
+    # 目录递归深度上限，防止符号链接成环或目录层级过深导致扫描卡死
+    max_depth: int = 6
+    # 单次扫描最多收录多少个代码文件
+    max_files: int = 500
+    # 单个文件超过这个大小就只登记元信息、不读内容（避免误选了几十 MB 的数据文件）
+    max_file_bytes: int = 512_000
+    # 目录名黑名单：依赖目录、构建产物、版本库内部文件都不是学生的作业代码
+    excluded_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
+            "env", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
+            "build", ".next", "target", "vendor", "site-packages", ".idea", ".vscode",
+            "cmake-build-debug", ".vs", "Debug", "Release", "x64",
+            # 回收站：删除功能把文件移到这里。不排除的话，删掉的文件又会出现在列表里
+            ".trash",
+        ]
+    )
+
+    # ------------------------------------------------------------------
+    # 写入类操作（在线编辑保存 / 替换 / 删除）
+    # ------------------------------------------------------------------
+    # 是否允许在页面上改文件。默认开启：这是给学生用的练习台，
+    # 写错了还能改回来（删除是移到 .trash，不是抹掉）。
+    # 如果项目库指向的是老师共享的公共目录，在 .env 里设
+    # LIBRARY__ALLOW_WRITE=false，页面上的编辑/替换/删除按钮会自动禁用。
+    allow_write: bool = True
+    # 删除文件时先移到这个目录（相对每个项目库根目录），而不是直接抹掉：
+    # 学生手滑点错了还能自己去把文件找回来。
+    # 设成空字符串表示「直接彻底删除」，不保留回收站。
+    # 注意：这个目录名同时被上面的 excluded_dirs 排除，不会出现在文件列表里。
+    trash_dir_name: str = ".trash"
+
+    @field_validator("roots", "excluded_dirs", mode="before")
+    @classmethod
+    def _split_lists(cls, value: object) -> object:
+        """见 split_csv_list 说明（NoDecode + 自定义拆分）。"""
+        return split_csv_list(value)
+
+    @field_validator("max_depth", "max_files", "max_file_bytes")
+    @classmethod
+    def _positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("项目库的深度/文件数/大小上限必须为正数")
+        return value
+
+    @property
+    def default_path(self) -> Path:
+        """默认项目库目录的绝对路径。"""
+        path = self.default_dir.expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def example_path(self) -> Path:
+        """示例作业目录的绝对路径。"""
+        path = self.example_dir.expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def root_paths(self) -> list[Path]:
+        """实际要扫描的根目录（绝对路径、去重、保序）。
+
+        相对路径按项目根目录解析，这样 `.env` 里写 `LIBRARY__ROOTS=我的作业`
+        也能用；写绝对路径则原样使用。列表为空时回落到默认目录，
+        并额外带上随项目附带的示例目录，保证第一次打开页面就有东西可看。
+        """
+        explicit = bool(self.roots)
+        raw = self.roots or [str(self.default_path)]
+        resolved: list[Path] = []
+        for item in raw:
+            path = Path(item).expanduser()
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            if path not in resolved:
+                resolved.append(path)
+
+        example = self.example_path
+        if not explicit and self.include_examples and example.is_dir() and example not in resolved:
+            resolved.append(example)
+        return resolved
+
+
+class ClassifierSettings(BaseModel):
+    """本地代码文件自动分类（归档）配置。
+
+    与 `LibrarySettings` 的区别，一句话说清：
+      * 项目库（library）默认只浏览：原地扫描、只登记
+        （编辑 / 替换 / 删除要用户主动点，见 LibrarySettings 的说明）；
+      * 分类器（classifier）会**真的搬动文件**：把 .c/.h/.java/.py 移到
+        `data/library/c`、`/java`、`/python` 下，并按语言归档。
+
+    两者**默认指向同一个目录**（理由见下面 root 的注释）。
+
+    因为会动文件，下面每一条限制都是为了"别把同学的作业弄丢"：
+    不跟随软链接、不覆盖同名文件、目标目录必须落在根目录之内。
+    """
+
+    # 待分类的根目录。学生把散放的代码丢进这里，扫描后会被归到子目录。
+    #
+    # **刻意与「本地项目库」用同一个目录**（data/library），原因很实际：
+    # 前端「拖进项目库」的流程是 上传 → /files/scan 按语言归档 → 刷新左侧列表，
+    # 而左侧列表来自 /library/scan。如果这两个功能指向不同文件夹，
+    # 学生刚拖进去的文件就**不会出现在列表里**，看起来像是没交上。
+    # 用一个目录后：上传落到 data/library/，归档到 data/library/python/ 等子目录，
+    # 而 /library/scan 是递归扫描的，归档后的文件依然在列表里（显示为 python/xxx.py），
+    # 点一下还能直接把内容读回编辑器。一个文件夹，两条功能都通。
+    root: Path = PROJECT_ROOT / "data" / "library"
+    # 递归扫描子目录。关掉后只处理根目录下的文件（适合"我就放了一层"的情况）
+    recursive: bool = True
+    # 未知类型的文件是否也移到 unknown/。
+    # 默认 False：只登记不移动。未知文件里可能混着别的重要资料，乱动风险太高。
+    move_unknown: bool = False
+    # 单次扫描最多处理多少个文件，防止误把整个磁盘拖进来
+    max_files: int = 2_000
+    # 单文件大小上限（超过则跳过并说明原因）。这里只是搬家、不读内容，所以给得比较宽松
+    max_file_bytes: int = 5 * 1024 * 1024
+    # 遍历时跳过的目录名：这些目录里的代码不是学生手写的作业
+    excluded_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
+            "env", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
+            "build", "target", "site-packages", ".idea", ".vscode", ".vs",
+            # 回收站：项目库的「删除」把文件移到这里。**必须排除**，
+            # 否则学生一往项目库拖文件，这次归档就会顺路走进 .trash，
+            # 把刚删掉的文件又搬回 python/ 里（名字还带着回收站的时间戳前缀）。
+            # 这个坑是真实使用中踩到的：删掉的作业又出现在列表里，学生一头雾水。
+            ".trash",
+        ]
+    )
+
+    @field_validator("excluded_dirs", mode="before")
+    @classmethod
+    def _split_lists(cls, value: object) -> object:
+        """见 split_csv_list 说明（NoDecode + 自定义拆分）。"""
+        return split_csv_list(value)
+
+    @field_validator("max_files", "max_file_bytes")
+    @classmethod
+    def _positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("分类器的文件数与大小上限必须为正数")
+        return value
+
+    @property
+    def root_path(self) -> Path:
+        """分类根目录的绝对路径（相对路径按项目根目录解析）。"""
+        path = self.root.expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 class Settings(BaseSettings):
     """全局配置根对象。"""
 
@@ -520,10 +696,35 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     tracing: TracingSettings = Field(default_factory=TracingSettings)
+    library: LibrarySettings = Field(default_factory=LibrarySettings)
+    classifier: ClassifierSettings = Field(default_factory=ClassifierSettings)
+
+    @model_validator(mode="after")
+    def _protect_library_trash_from_classifier(self) -> Settings:
+        """把项目库的回收站目录名补进分类器的遍历黑名单。
+
+        为什么需要这一步：回收站目录名是可配置的（LIBRARY__TRASH_DIR_NAME），
+        而分类器的黑名单是它自己的一份清单。两者一旦对不上，
+        "往项目库拖一个文件"就会顺路走进回收站，把学生刚删掉的文件
+        又搬回 c/ java/ python/ 里——名字还带着回收站的时间戳前缀。
+        与其在两处各写一份、靠人记得同步，不如在这里由配置自己兜住。
+        """
+        trash = (self.library.trash_dir_name or "").strip()
+        if trash and trash not in self.classifier.excluded_dirs:
+            self.classifier.excluded_dirs.append(trash)
+        return self
 
     def ensure_directories(self) -> None:
         """一次性创建运行期需要的本地目录。"""
         self.database.ensure_directory()
+        # 默认项目库目录：建出来学生才知道代码该放哪儿
+        self.library.default_path.mkdir(parents=True, exist_ok=True)
+        # 分类根目录 + 三个归档目录：先把"收纳盒"摆好，学生一看就明白会归到哪。
+        # 目录名与 app/services/file_classifier.py 的 ARCHIVE_DIRS 保持一致；
+        # 那边新增语言时，这里也要加上对应的目录名。
+        self.classifier.root_path.mkdir(parents=True, exist_ok=True)
+        for name in ("c", "java", "python"):
+            (self.classifier.root_path / name).mkdir(exist_ok=True)
 
 
 @lru_cache(maxsize=1)

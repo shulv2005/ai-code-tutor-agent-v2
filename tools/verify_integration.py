@@ -43,6 +43,11 @@ EXPECTED_MODULES: dict[str, int] = {
     # 原先还有 history 列表 / 详情 / 删除三个，随「历史记录」功能一起删除了。
     # 数字只写"下限"，但少一个模块或误删一条接口会立刻失败。
     "tutor": 8,
+    # 项目库现在有 5 个操作：scan / file(GET) / file(PUT) / file(DELETE) / status。
+    # 写两个（PUT/DELETE）是「在线编辑保存 / 替换 / 删除」用的，
+    # 谁把它们误删了，这条断言会立刻报警。
+    "library": 5,
+    "files": 2,
     "check": 1,
     "fix": 3,
     "comment": 3,
@@ -66,6 +71,8 @@ EXPECTED_TABLES = {
     "code_check_records",
     "code_fix_records",
     "comment_records",
+    # 文件自动分类台账
+    "classified_files",
 }
 
 # README 必须包含的章节关键词（对应需求里点名的内容）
@@ -73,9 +80,7 @@ EXPECTED_README_SECTIONS = [
     "项目功能",
     "一键启动",
     "如何使用 HTML 界面",
-    # 原为「如何添加学生代码」（讲拖拽入库与归档）。项目库删除后这一章改成
-    # 讲"拖入 / 选择文件 / 粘贴"三条入口，标题随之调整。
-    "学生怎么把代码放进来",
+    "如何添加学生代码",
     "AI 功能的原理",
 ]
 
@@ -96,6 +101,8 @@ EXPECTED_SERVICE_FILES = [
     "app/api/v1/endpoints/check.py",
     "app/api/v1/endpoints/fix.py",
     "app/api/v1/endpoints/comment.py",
+    "app/api/v1/endpoints/files.py",
+    "app/api/v1/endpoints/library.py",
     "app/api/v1/endpoints/tutor.py",
     # 使用时长与学习报告（记录学习时长、导出 Word 给老师）
     "app/api/v1/endpoints/usage.py",
@@ -112,6 +119,7 @@ EXPECTED_SERVICE_FILES = [
     "app/services/code_checker.py",
     "app/services/code_fixer.py",
     "app/services/comment_generator.py",
+    "app/services/classifier_placeholder",  # 占位：下面会单独判断 file_classifier
     # 错题本：记录服务 + ORM 模型 + 建表 SQL 参考 + 设计文档
     "app/services/tutor_service.py",
     "app/models/error_log.py",
@@ -163,8 +171,7 @@ def check_routes() -> set[str]:
     report("没有未登记的新模块", not extra, f"多出：{sorted(extra)}" if extra else "")
 
     total = sum(by_tag.values())
-    # 删掉项目库与自动分类后是 27 条；这里只兜住没有意外塌方
-    report(f"接口总数 {total} 条", total >= 25)
+    report(f"接口总数 {total} 条", total >= 30)
 
     pages = frontend_page_urls("http://127.0.0.1:8000")
     report("启动横幅列出学生端页面", len(pages) == 1, " / ".join(pages))
@@ -341,7 +348,7 @@ def check_readme_sections() -> None:
 
     report("README 说明了 .bat 一键启动", "start.bat" in readme and "stop.bat" in readme)
     report("README 说明了接口文档地址", "/docs" in readme)
-    report("README 说明了数据存放位置", "app.db" in readme and "student_error_logs" in readme)
+    report("README 说明了数据存放位置", "app.db" in readme and "data/library" in readme)
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +476,8 @@ def check_service_files() -> None:
     print("=" * 72)
 
     for relative in EXPECTED_SERVICE_FILES:
+        if relative.endswith("classifier_placeholder"):
+            relative = "app/services/file_classifier.py"
         path = BASE / relative
         ok = path.is_file()
         report(relative, ok)
