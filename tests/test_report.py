@@ -31,6 +31,7 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.models.base import utc_now
 from app.models.usage import UsageSession
+from app.services import win_gdi_text
 from app.services.ability_service import (
     DIMENSIONS,
     MIN_SCORE,
@@ -38,7 +39,7 @@ from app.services.ability_service import (
     classify,
     score_from_weight,
 )
-from app.services.png_chart import Canvas, render_radar_png
+from app.services.png_chart import Canvas, label_anchor, render_radar_png
 from app.services.report_docx import render_learning_report
 from app.services.report_insight import (
     RADAR_GUIDE,
@@ -1281,14 +1282,143 @@ def test_png_is_a_valid_png() -> None:
     """
     import struct
 
+    from app.services.png_chart import HEIGHT, WIDTH
+
     dims = _sample_ability()["dimensions"]
     payload = render_radar_png(dims, "robustness")
     assert _png_chunks(payload) == ["IHDR", "IDAT", "IEND"]
     # IHDR 紧跟块头，前 8 个字节是宽高
-    assert struct.unpack(">II", payload[16:24]) == (620, 520)
+    assert struct.unpack(">II", payload[16:24]) == (WIDTH, HEIGHT)
     # 位深 8 / 颜色类型 2（真彩）
     assert payload[24] == 8
     assert payload[25] == 2
+
+
+def _decode_png(payload: bytes) -> tuple[int, int, bytes]:
+    """把无滤波的 8 位真彩 PNG 解回 (宽, 高, RGB 像素)。
+
+    测试里要按坐标取色（例如"最弱那一项的标签是红的吗"），
+    没有解码器就只能断言"字节数变了"，那种断言挡不住通道顺序写反。
+    """
+    import struct
+    import zlib
+
+    index = 8
+    idat = bytearray()
+    width = height = 0
+    while index < len(payload):
+        length = struct.unpack(">I", payload[index : index + 4])[0]
+        tag = payload[index + 4 : index + 8]
+        body = payload[index + 8 : index + 8 + length]
+        if tag == b"IHDR":
+            width, height = struct.unpack(">II", body[:8])
+        elif tag == b"IDAT":
+            idat.extend(body)
+        index += 12 + length
+    raw = zlib.decompress(bytes(idat))
+    stride = width * 3
+    pixels = bytearray()
+    for y in range(height):
+        start = y * (stride + 1) + 1  # 每行开头有一个滤波器字节
+        pixels.extend(raw[start : start + stride])
+    return width, height, bytes(pixels)
+
+
+def _dominant_tint(pixels: bytes, width: int, box: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    """取一块区域里"最有颜色"的像素（文字的抗锯齿边缘会被过滤掉）。"""
+    from collections import Counter
+
+    left, top, right, bottom = box
+    counter: Counter[tuple[int, int, int]] = Counter()
+    for y in range(top, bottom):
+        for x in range(left, right):
+            offset = (y * width + x) * 3
+            pixel = (pixels[offset], pixels[offset + 1], pixels[offset + 2])
+            if max(pixel) - min(pixel) > 40:  # 灰阶的不算
+                counter[pixel] += 1
+    return counter.most_common(1)[0][0] if counter else (0, 0, 0)
+
+
+@pytest.mark.skipif(
+    not win_gdi_text.available(), reason="GDI 文字渲染只在 Windows 上可用"
+)
+def test_radar_png_has_text_on_every_axis() -> None:
+    """六个轴都要有文字 —— 没有文字的雷达图是读不懂的。
+
+    六个角凹凹凸凸，但不知道哪个角是哪一项，还得来回对照旁边的表格。
+    """
+    from app.services.png_chart import HEIGHT, WIDTH
+
+    dims = _sample_ability()["dimensions"]
+    with_labels = render_radar_png(dims, "robustness")
+    without = render_radar_png([], "")
+
+    width, height, pixels = _decode_png(with_labels)
+    assert (width, height) == (WIDTH, HEIGHT)
+
+    # 文字画在轴线外侧。用**渲染时同一套坐标**算出六个锚点，每个锚点周围
+    # 取一小块，块里必须出现"墨色"像素。
+    #
+    # 判据是"明显比背景暗"，**不能**写成"红绿通道都 < 140"：最弱那一项的标签
+    # 是红色的（R=201），会被那种判据漏掉 —— 第一版就是这么误报"只有 5 个轴"的。
+    # 背景只有白(总和 765)与浅灰网格(672)，取总和 < 600 即可排除。
+    found = 0
+    for index in range(len(dims)):
+        anchor_x, anchor_y = label_anchor(index, len(dims))
+        x, y = int(anchor_x), int(anchor_y)
+        box = (max(0, x - 52), max(0, y - 18), min(width, x + 52), min(height, y + 18))
+        ink = 0
+        for row in range(box[1], box[3]):
+            for col in range(box[0], box[2]):
+                offset = (row * width + col) * 3
+                if sum(pixels[offset : offset + 3]) < 600:
+                    ink += 1
+        if ink > 20:
+            found += 1
+    assert found == len(dims), f"只有 {found} 个轴上有文字"
+    # 有文字的图必须与空图不同
+    assert with_labels != without
+
+
+@pytest.mark.skipif(
+    not win_gdi_text.available(), reason="GDI 文字渲染只在 Windows 上可用"
+)
+def test_radar_weakest_label_is_red_not_blue() -> None:
+    """最弱那一项的标签要是红的，不能是紫蓝。
+
+    这里踩过：GDI 的 32 位 DIB 是 **BGRA** 字节序，我按 RGB 读回，
+    红蓝被对调 —— 界面上"最弱项标红"变成了紫蓝色（采样到 (74,74,201)）。
+    断言写成"偏红"就能挡住这类通道顺序错误，而"字节数变了"挡不住。
+    """
+    dims = _sample_ability()["dimensions"]
+    payload = render_radar_png(dims, "robustness")
+    width, _, pixels = _decode_png(payload)
+
+    # 最弱项（健壮性）在索引 4 → 左下角
+    weak_box = (int(width * 0.05), 350, int(width * 0.30), 400)
+    red, green, blue = _dominant_tint(pixels, width, weak_box)
+    assert red > green and red > blue, f"最弱项标签不是红色：{(red, green, blue)}"
+    assert red - blue > 60, f"红蓝相差太小，可能是通道写反了：{(red, green, blue)}"
+
+
+def test_colorref_matches_windows_byte_order() -> None:
+    """COLORREF 是 0x00BBGGRR（低字节是红），与常见的 RGB 相反。"""
+    from app.services.win_gdi_text import _colorref
+
+    assert _colorref((201, 74, 74)) == 0x004A4AC9
+    assert _colorref((0, 0, 255)) == 0x00FF0000  # 纯蓝：蓝在高字节
+    assert _colorref((255, 0, 0)) == 0x000000FF  # 纯红：红在低字节
+
+
+def test_gdi_text_degrades_gracefully() -> None:
+    """画不了字时返回 None，绝不能抛异常把报告生成搞崩。"""
+    from app.services.win_gdi_text import Label, paint
+
+    assert paint(0, 0, b"", [Label("x", 0, 0, 12)]) is None
+    assert paint(4, 4, b"", [Label("x", 0, 0, 12)]) is None       # 长度对不上
+    assert paint(4, 4, b"\x00" * 48, []) is None                   # 没有标签
+    # 正常尺寸但明显画不了（尺寸合法、内容为空）也不该抛
+    assert paint(4, 4, b"\xff" * 48, [Label("", 2, 2, 99)]) in (None, b"\xff" * 48)
 
 
 def test_png_radar_empty_still_renders() -> None:
@@ -1335,7 +1465,11 @@ def test_docx_embeds_the_radar_image() -> None:
         assert "xmlns:wp=" in document
         assert 'r:embed="rId3"' in document
         # 图片尺寸按真实比例算：宽高都不能是 0
-        assert 'wp:extent cx="3780000" cy="3170322"' in document
+        from app.services.png_chart import HEIGHT as RADAR_H
+        from app.services.png_chart import WIDTH as RADAR_W
+        expected_cx = int(10.5 * 360000)
+        expected_cy = int(expected_cx * RADAR_H / RADAR_W)
+        assert f'wp:extent cx="{expected_cx}" cy="{expected_cy}"' in document
 
         # 每个 XML 部件都要能被解析（命名空间没声明的错误在这里就会暴露）
         for name in names:

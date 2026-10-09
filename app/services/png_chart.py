@@ -32,10 +32,50 @@ import math
 import struct
 import zlib
 
+from app.services import win_gdi_text
+
 # 画布尺寸。宽高都取偶数、且行字节数是 4 的倍数，压缩后体积更小。
-WIDTH = 620
-HEIGHT = 520
+# 宽高比给足左右两边：六个轴标签里，左右两侧那两对是最占地方的。
+WIDTH = 660
+HEIGHT = 540
 SCALE = 2  # 超采样倍数：先按 2 倍画再缩一半，等于免费拿到抗锯齿
+
+# 轴标签的排布（单位是最终像素，绘制时会乘以 SCALE）
+LABEL_RATIO = 1.25   # 标签中心到圆心的距离 / 半径
+NAME_DY = 9          # 维度名相对标签中心上移多少
+SCORE_DY = 11        # 分数相对标签中心下移多少
+NAME_SIZE = 17
+SCORE_SIZE = 15
+LABEL_COLOR = (60, 70, 80)
+SCORE_COLOR = (120, 132, 144)
+
+# 雷达图本身的几何：半径占短边的比例、以及圆心相对画布中心的偏移。
+# 抽成常量而不是散在函数里，是为了让**测试能用同一套坐标**去采样标签位置 ——
+# 测试里手写一套估算坐标，改布局就会失效（第一版就是这么挂的）。
+RADIUS_RATIO = 0.325
+CENTER_DY = -4
+
+
+def center() -> tuple[float, float]:
+    """圆心（最终像素坐标）。"""
+    return (WIDTH / 2, HEIGHT / 2 + CENTER_DY)
+
+
+def base_radius() -> float:
+    return min(WIDTH, HEIGHT) * RADIUS_RATIO
+
+
+def point_at(index: int, count: int, ratio: float) -> tuple[float, float]:
+    """第 index 根轴上、距圆心 `ratio` 倍半径处的坐标（最终像素）。"""
+    angle = (math.pi * 2 * index) / count - math.pi / 2
+    cx, cy = center()
+    radius = base_radius() * ratio
+    return (cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+
+
+def label_anchor(index: int, count: int) -> tuple[float, float]:
+    """第 index 个轴标签的锚点（最终像素）—— 渲染与测试共用。"""
+    return point_at(index, count, LABEL_RATIO)
 
 # 颜色（R, G, B）
 WHITE = (255, 255, 255)
@@ -187,6 +227,19 @@ class Canvas:
             raw.extend(row)
         return _png(self.width, self.height, bytes(raw))
 
+    def to_rgb(self) -> bytes:
+        """导出成一整块 `width * height * 3` 的 RGB 字节（交给文字图层用）。"""
+        return b"".join(bytes(row) for row in self.rows)
+
+    def load_rgb(self, payload: bytes) -> None:
+        """把一整块 RGB 字节装回画布（文字图层画完之后调）。"""
+        expected = self.width * self.height * 3
+        if len(payload) != expected:
+            raise ValueError(f"像素数据长度不对：期望 {expected}，实际 {len(payload)}")
+        stride = self.width * 3
+        for y in range(self.height):
+            self.rows[y][:] = payload[y * stride : (y + 1) * stride]
+
 
 def _png(width: int, height: int, raw: bytes) -> bytes:
     """最小 PNG 容器：魔数 + IHDR + IDAT + IEND，每块都带 CRC32。"""
@@ -215,14 +268,19 @@ def render_radar_png(dimensions: list[dict], weakest: str = "") -> bytes:
     `dimensions` 就是 `AbilityService.build()` 里那一串，每项要有
     `label` 与 `score`。空列表时返回一张只带外框和提示的空图 ——
     Word 里宁可放一张"还没有数据"的图，也不要一个破图或者干脆缺图。
+
+    **六个轴上都标出「维度名 + 分数」**（`win_gdi_text` 用 Windows GDI 画中文）。
+    没有文字的雷达图是读不懂的：六个角凹凹凸凸，但不知道哪个角是哪一项，
+    还得来回对照旁边的表格。画不了字时自动降级成没有文字的图（见 win_gdi_text）。
     """
     size = max(len(dimensions), 3)
     canvas = Canvas(WIDTH * SCALE, HEIGHT * SCALE)
-    cx = (WIDTH / 2) * SCALE
-    # 半径取画布短边的 0.36：再大顶点的圆点会贴边，再小图就显得空。
-    # cy 略微上移，给底部留出与顶部相当的白边（六边形最下方是个尖角）。
-    cy = (HEIGHT / 2) * SCALE - 4 * SCALE
-    radius = min(WIDTH, HEIGHT) * 0.36 * SCALE
+    cx, cy = center()
+    cx *= SCALE
+    cy *= SCALE
+    # 半径取短边的 0.325：剩下的地方要留给轴标签。
+    # 原来是 0.36，加上文字之后左右两侧的标签会被裁掉（实测）。
+    radius = base_radius() * SCALE
 
     def at(index: int, ratio: float) -> tuple[float, float]:
         angle = (math.pi * 2 * index) / size - math.pi / 2
@@ -264,7 +322,64 @@ def render_radar_png(dimensions: list[dict], weakest: str = "") -> bytes:
         is_weak = item.get("key") == weakest
         canvas.circle(x, y, (5 if is_weak else 3.4) * SCALE, WEAK if is_weak else AREA_LINE)
 
+    # ---- 六轴标签：维度名 + 分数 ----
+    _draw_axis_labels(canvas, dimensions, at, weakest)
+
     return canvas.downscale(SCALE).to_png()
 
 
-__all__ = ["HEIGHT", "WIDTH", "Canvas", "render_radar_png"]
+def _draw_axis_labels(canvas: Canvas, dimensions: list[dict], at, weakest: str) -> None:
+    """在六个轴的外侧写「维度名 / 分数」两行。
+
+    对齐方式按方位决定（右侧的靠左排、左侧的靠右排），这样文字始终朝图形
+    **外面**长，不会压到雷达图上。左右两侧的标签因此也不会戳出画布 ——
+    半径之所以从 0.36 收到 0.325，就是给这两行文字让位。
+    """
+    if not win_gdi_text.available() or canvas.width // SCALE != WIDTH:
+        return
+
+    labels: list[win_gdi_text.Label] = []
+    for index, item in enumerate(dimensions):
+        angle = (math.pi * 2 * index) / len(dimensions) - math.pi / 2
+        anchor_x, anchor_y = at(index, LABEL_RATIO)
+        cos = math.cos(angle)
+        align = "left" if cos > 0.3 else ("right" if cos < -0.3 else "center")
+        is_weak = item.get("key") == weakest
+
+        labels.append(
+            win_gdi_text.Label(
+                text=str(item.get("label", "")),
+                x=int(anchor_x),
+                y=int(anchor_y - NAME_DY * SCALE),
+                size=NAME_SIZE * SCALE,
+                align=align,
+                color=WEAK if is_weak else LABEL_COLOR,
+            )
+        )
+        labels.append(
+            win_gdi_text.Label(
+                text=str(item.get("score", "")),
+                x=int(anchor_x),
+                y=int(anchor_y + SCORE_DY * SCALE),
+                size=SCORE_SIZE * SCALE,
+                align=align,
+                color=WEAK if is_weak else SCORE_COLOR,
+            )
+        )
+
+    painted = win_gdi_text.paint(canvas.width, canvas.height, canvas.to_rgb(), labels)
+    if painted is not None:
+        canvas.load_rgb(painted)
+
+
+__all__ = [
+    "HEIGHT",
+    "LABEL_RATIO",
+    "WIDTH",
+    "Canvas",
+    "base_radius",
+    "center",
+    "label_anchor",
+    "point_at",
+    "render_radar_png",
+]
