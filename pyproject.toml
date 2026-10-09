@@ -14,6 +14,15 @@ dependencies = [
     # 数据库：本地 SQLite（错题本也在这里）+ 异步驱动
     "sqlalchemy>=2.0.30",
     "aiosqlite>=0.20.0",
+    # greenlet 必须**显式**写出来，不能指望 sqlalchemy 帮你带。
+    # SQLAlchemy 的 async 引擎（create_async_engine → await 会话）底层靠它，
+    # 但 sqlalchemy 对它的依赖标记是
+    #   greenlet>=1; platform_machine == "aarch64" or ... "x86_64" or ...
+    # 在 ARM64 等不在名单里的机器上，pip 会**跳过** greenlet，
+    # sqlalchemy 装得上、import 也不报错，直到真正建异步引擎才炸：
+    #   ModuleNotFoundError: No module named 'greenlet'
+    # 对使用者来说就是"新电脑上双击 start.bat 弹一屏英文堆栈"。
+    "greenlet>=3.0.0",
     "httpx>=0.27.0",
     # 通用 LLM 客户端（app/core/llm_client.py）：官方 SDK，负责鉴权头、
     # 超时与 SSE 流式解析；项目自管重试与错误映射（见该文件模块注释）

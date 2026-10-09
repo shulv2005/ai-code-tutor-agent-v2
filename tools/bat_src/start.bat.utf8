@@ -56,6 +56,7 @@ REM  配置区：只需要改端口或地址时，改这里的几行就够了
 REM ===========================================================================
 set "VENV_DIR=.venv"                    REM 虚拟环境文件夹
 set "REQ_FILE=requirements.txt"         REM 依赖清单文件
+set "PREFLIGHT=tools\preflight.py"      REM 依赖自检脚本（它自己读 REQ_FILE）
 set "APP_HOST=127.0.0.1"                REM 监听地址（只允许本机访问）
 set "APP_PORT=8000"                     REM 监听端口
 set "APP_URL=http://%APP_HOST%:%APP_PORT%"
@@ -237,13 +238,18 @@ REM ===========================================================================
 echo.
 echo [3/5] 正在检查项目依赖...
 
-REM 逐个探测关键库：缺一个就会重新安装依赖。
-REM 注意要覆盖「功能真的能用」的全部必需库，而不只是核心框架——
-REM   * python_multipart（上传代码文件要用）缺失时，服务能启动但一上传就 500；
-REM   * tree_sitter_c / tree_sitter_java（C 和 Java 的语法包）缺失时，
-REM     服务照常运行，但解析 C/Java 代码的结构会静默失败，学生看不出原因。
-REM 这类"能启动但功能残缺"的问题最难排查，所以这里宁多勿少。
-python -c "import fastapi, uvicorn, sqlalchemy, tree_sitter, tree_sitter_c, tree_sitter_java, python_multipart" >nul 2>&1
+REM 依赖探测交给 %PREFLIGHT%，它**自己读 %REQ_FILE%**，所以这里不维护第二份清单。
+REM
+REM 为什么不再写一行 import：这份清单原来是手写的，于是漏掉了 greenlet ——
+REM 而它恰恰是新电脑上最容易缺的那个。SQLAlchemy 的异步引擎依赖 greenlet，
+REM 但 sqlalchemy 对它的依赖带平台标记（platform_machine == "x86_64" 之类），
+REM ARM64 等机器上 pip 会直接跳过。结果是本脚本误判"依赖已就绪"跳过安装，
+REM 然后 uvicorn 甩给学生一屏英文堆栈（ModuleNotFoundError: No module named 'greenlet'）。
+REM 清单改成从 requirements.txt 生成，就不会再漂移。
+REM
+REM preflight 还会真正建一次异步引擎 —— 光 import 模块查不出 greenlet 这种
+REM "装得上、import 也不报错、真用才炸"的问题。
+python "%PREFLIGHT%" --quiet >nul 2>&1
 if errorlevel 1 (
     echo       依赖不完整，开始安装（首次约需 3-10 分钟，请耐心等待）...
     echo.
@@ -283,6 +289,18 @@ if errorlevel 1 (
     )
     echo.
     echo       依赖安装完成。
+
+    REM 装完再自检一次（这次不加 --quiet，让 preflight 把缺什么说清楚）。
+    REM "装是装完了但某项还是不可用"是真实存在的情况：包装上了却 import 报错。
+    REM 与其让学生自己读英文 traceback，不如直接给他中文结论。
+    python "%PREFLIGHT%" >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        python "%PREFLIGHT%"
+        echo.
+        pause
+        exit /b 1
+    )
 ) else (
     echo       依赖已就绪，跳过安装。
 )

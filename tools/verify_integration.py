@@ -104,6 +104,8 @@ EXPECTED_SERVICE_FILES = [
     "app/services/report_service.py",
     # 手写 OOXML 生成 .docx，刻意不引 python-docx（那会连带装 lxml）
     "app/services/report_docx.py",
+    # 启动前依赖自检：start.bat 调它，它自己读 requirements.txt
+    "tools/preflight.py",
     "app/services/ability_service.py",
     "app/services/report_insight.py",
     "app/services/png_chart.py",
@@ -208,7 +210,7 @@ def check_requirements() -> None:
     # 这条是"防清空"的兜底门槛，不是精确数字：真正要防的是有人误删了
     # 依赖清单里的某一大段（那种情况下"覆盖/多余"两条比对会双双通过，
     # 因为两边一起被删干净了）。因此只写一个合理的下限。
-    # 当前实际是 16 个（FastAPI 全家桶 + SQLite + httpx/openai + 6 个 tree-sitter 包），
+    # 当前实际是 17 个（FastAPI 全家桶 + SQLite + greenlet + httpx/openai + 6 个 tree-sitter 包），
     # 移除了开源贡献端之后从 25 降下来的——别再往上调，除非真的加了依赖。
     report(
         f"依赖清单没有被清空（当前 {len(set(declared) & set(installed))} 个包，下限 12）",

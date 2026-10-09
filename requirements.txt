@@ -35,6 +35,14 @@ python-multipart>=0.0.9
 # 业务代码一行都不用动（建表 SQL 两种方言都写在 docs/student_error_logs.sql）。
 sqlalchemy>=2.0.30
 aiosqlite>=0.20.0
+# greenlet 必须**显式**写出来，不能指望 sqlalchemy 帮你带 —— 这是"新电脑上跑不起来"
+# 最常见的那个坑。SQLAlchemy 的 async 引擎靠它，但它对它的依赖标记是
+#   greenlet>=1; platform_machine == "aarch64" or ... "x86_64" or ...
+# 在 ARM64 这类不在名单里的机器上 pip 会**跳过** greenlet：
+# sqlalchemy 装得上、import 也不报错，直到真正建异步引擎才炸出
+#   ModuleNotFoundError: No module named 'greenlet'
+# 使用者看到的就是双击 start.bat 后一屏英文堆栈。
+greenlet>=3.0.0
 
 # ---------- HTTP 客户端（调用大模型 API）----------
 httpx>=0.27.0

@@ -886,9 +886,9 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 
 | 脚本 | 覆盖内容 | 实测 |
 | --- | --- | --- |
-| `tools\verify_integration.py` | 整合自检：模块注册 / 依赖一致 / README 接口与章节 / 文档内部链接 / .bat 与数据库表 | 60 项 ✓ |
-| `tools\verify_frontend.py` | 页面与静态资源 + tutor 接口（自带临时服务与临时数据目录） | 21 项 ✓ |
-| `tools\verify_dragdrop.py` | 拖拽入库 / 占位提示 / 分隔条 / 大文件懒加载 | 39 项 ✓ |
+| `tools\verify_integration.py` | 整合自检：模块注册 / 依赖一致 / README 接口与章节 / 文档内部链接 / .bat 与数据库表 | 69 项 ✓ |
+| `tools\verify_frontend.py` | 页面与静态资源 + tutor 接口（自带临时服务与临时数据目录） | 16 项 ✓ |
+| `tools\verify_dragdrop.py` | ★ 上传 / 粘贴**不落盘**、占位提示、分隔条、大文件懒加载 | 27 项 ✓ |
 | `tools\verify_check.py` `[--ai]` | AI 检测：本地路径 9 项；加测真实模型 12 项 | ✓ |
 | `tools\verify_fix.py` `[--ai]` | 代码改错：本地路径 9 项；加测真实模型 12 项 | ✓ |
 | `tools\verify_comment.py` `[--ai]` | 注释生成：本地路径 6 项；加测真实模型 19 项 | ✓ |
@@ -896,6 +896,8 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 | `tools\verify_bat.py` | `start.bat` → 服务 → `stop.bat` 全流程（含"打开的地址带随机参数，绕开浏览器缓存"） | 10 项 ✓ |
 | `tools\verify_no_python.py` | **新电脑没装 Python** 的那几条分支：自动安装被调用、失败后给出手动指引、脚本缺失时的降级、"装了但没加 PATH"能被目录扫描捞回来；外加安装包校验库的架构判定 / 哈希 / 签名拒绝分支（**不会真的装 Python**） | 19 项 ✓ |
 | `tools\verify_report.py` | **使用时长 + 学习报告 + 能力雷达**：心跳累加与单段封顶、区间汇总口径、易错知识点排行、六维打分的单调性、与上一周期的趋势对比、弱项成因与提升建议、反复出错语句的判别力、手写 PNG 的 CRC、导出的 .docx 结构与内容，并**用 Word 亲自打开一次**（结构合法 ≠ Word 认） | 104 项 ✓ |
+| `tools\preflight.py` | **启动前依赖自检**：按 `requirements.txt` 逐项 import，并真正建一次异步数据库引擎 + 解析一段代码。`start.bat` 就是调它来判断要不要装依赖 | 17 个包 ✓ |
+| `tools\cleanroom_check.py` | **新电脑模拟**：复制项目 → 建空虚拟环境 → 只按 `requirements.txt` 装依赖 → 起服务打接口；再卸掉 `greenlet` 复现故障，确认自检报得出中文原因、重装能修好 | 通过 ✓ |
 | `tools\check_frontend.py` | JS 语法 / DOM id / CSS 类名 / **接口与方法**交叉检查 + 前端行为测试 | 全部通过 ✓ |
 | `tools\verify_ai_real.py` | 真实大模型验收（3 个示例作业 × 3 个功能） | 10 项 ✓ |
 | `tools\verify_llm_client_real.py` | 通用 LLM 客户端：一次性调用 / 流式输出 / Key 无效 / Key 为空 | 14 项 ✓ |
@@ -953,6 +955,44 @@ python -m ruff check app tests tools   # 代码检查（当前 0 问题）
 3. **真的是脚本报错** —— 窗口最后会停在 `请按任意键继续`，截图反馈即可。
    脚本对中文与编码做了处理（`chcp 936` + GBK + CRLF），不会出现乱码导致的解析错误，
    也**不要**把 `start.bat` 另存成 UTF-8，那才会真的刷屏报错。
+
+**Q：换一台新电脑（或重装系统后）双击 `start.bat`，蹦出一屏英文堆栈，最后一行是
+`ModuleNotFoundError: No module named 'greenlet'`？**
+
+这是**依赖清单曾经漏了 `greenlet`** 导致的，现在已经修好（写进了
+`requirements.txt` 与 `pyproject.toml`）。根因是 SQLAlchemy 的**异步**引擎靠
+greenlet，但 sqlalchemy 对它的依赖带平台标记：
+
+```
+greenlet>=1; platform_machine == "aarch64" or ... "x86_64" or ...
+```
+
+在不在这个名单里的机器（典型是 ARM64）上，pip 会**跳过** greenlet：
+sqlalchemy 装得上、`import sqlalchemy` 也不报错，直到真正建异步引擎才炸。
+更糟的是 `start.bat` 原来的依赖探测清单是**手写**的，里面没有 greenlet，
+于是它判定"依赖已就绪"直接跳过安装，把英文堆栈甩给了学生。
+
+**遇到就重新双击一次 `start.bat`**：它会先跑 `tools/preflight.py` 自检，发现缺项后
+重装依赖，然后二次自检并把中文结论打出来。想手动修：
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+或者干脆删掉项目下的 `.venv` 文件夹再双击 `start.bat`。
+
+> 为什么现在**不会**再漏：`tools/preflight.py` 自己读 `requirements.txt`
+> （不再维护第二份手写清单，清单加一项它自动跟着查），而且它会真的建一次
+> 异步引擎 —— 光 `import` 模块查不出 greenlet 这种"装得上、import 不报错、
+> 真用才炸"的问题。`tests/test_dependencies.py` 钉住了这几条不变量。
+
+**Q：怎么先确认依赖是齐的，免得启动到一半才发现？**
+
+```powershell
+.venv\Scripts\python tools\preflight.py
+```
+
+通过会打印「依赖自检通过（17 个包…）」；不通过会列出缺哪个包、以及怎么修。
 
 **Q：能不能不装 Python、直接双击就能用？**
 不能，这是有意的取舍：本项目要调用大模型接口，本来就必须联网，所以"联网自动装一个
